@@ -1,5 +1,15 @@
 import mongoose, { Schema, type Document, type Model } from 'mongoose';
 
+export type AppMediaKind = 'image' | 'video';
+
+export interface AppMediaItem {
+  type: AppMediaKind;
+  url: string;
+  poster?: string;
+  caption?: string;
+  sort?: number;
+}
+
 export interface AppItemDocument extends Document {
   name: string;
   slug: string;
@@ -10,12 +20,25 @@ export interface AppItemDocument extends Document {
   cover?: string;
   publisher?: string;
   content?: string;
+  /** 结构化图文/视频，用于详情展示（按 sort 排序） */
+  media: AppMediaItem[];
   packageName?: string;
   packageUrl?: string;
   entryUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const appMediaSubSchema = new Schema<AppMediaItem>(
+  {
+    type: { type: String, enum: ['image', 'video'], required: true },
+    url: { type: String, required: true, trim: true },
+    poster: { type: String, trim: true },
+    caption: { type: String, trim: true },
+    sort: { type: Number }
+  },
+  { _id: false }
+);
 
 const appItemSchema = new Schema<AppItemDocument>(
   {
@@ -33,6 +56,7 @@ const appItemSchema = new Schema<AppItemDocument>(
     cover: { type: String, trim: true },
     publisher: { type: String, trim: true },
     content: { type: String, trim: true },
+    media: { type: [appMediaSubSchema], default: [] },
     packageName: { type: String, trim: true },
     packageUrl: { type: String, trim: true },
     entryUrl: { type: String, trim: true }

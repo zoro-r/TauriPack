@@ -5,6 +5,7 @@ import {
   Divider,
   Empty,
   Form,
+  Image,
   Input,
   InputNumber,
   Modal,
@@ -38,6 +39,16 @@ interface AppCategory {
   isActive: boolean;
 }
 
+type AppMediaKind = 'image' | 'video';
+
+interface AppMediaItem {
+  type: AppMediaKind;
+  url: string;
+  poster?: string;
+  caption?: string;
+  sort?: number;
+}
+
 interface AppItem {
   _id: string;
   name: string;
@@ -48,6 +59,7 @@ interface AppItem {
   cover?: string;
   publisher?: string;
   content?: string;
+  media?: AppMediaItem[];
   packageName?: string;
   packageUrl?: string;
   entryUrl?: string;
@@ -76,6 +88,7 @@ interface AppFormValues {
   summary?: string;
   description?: string;
   cover?: string;
+  media?: AppMediaItem[];
 }
 
 interface AppPackageUploadResult {
@@ -87,6 +100,10 @@ interface AppPackageUploadResult {
 
 interface AppCoverUploadResult {
   coverUrl: string;
+}
+
+interface AppCatalogMediaUploadResult {
+  url: string;
 }
 
 interface LoginStatePayload {
@@ -136,6 +153,10 @@ interface AppAccessPayload {
 const categoryNameOf = (categoryId: AppItem['categoryId']) =>
   typeof categoryId === 'string' ? '' : categoryId?.name || '';
 
+/** 后端按 sort 存；列表展示前再兜底排一次序 */
+const sortAppMediaItems = (media?: AppMediaItem[]) =>
+  [...(media ?? [])].sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+
 const resolveAppAssetUrl = (value?: string) => {
   if (!value) {
     return '';
@@ -157,8 +178,96 @@ const resolveAppAssetUrl = (value?: string) => {
   return value;
 };
 
+/** 与应用详情媒体上传后端 `limits.fileSize` 一致 */
+const CATALOG_MEDIA_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+
 const qrImageOf = (value: string) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(value)}`;
+
+const CatalogDetailMediaVideoTile = ({ item }: { item: AppMediaItem }) => {
+  const [videoPreviewOpen, setVideoPreviewOpen] = useState(false);
+  const resolved = resolveAppAssetUrl(item.url);
+  const resolvedPoster = item.poster ? resolveAppAssetUrl(item.poster) : undefined;
+
+  return (
+    <>
+      <figure className="catalog-app-detail__media-card">
+        <div
+          className="catalog-app-detail__media-card-frame catalog-app-detail__media-card-frame--video-hit"
+          role="button"
+          tabIndex={0}
+          aria-label="预览视频"
+          onClick={() => setVideoPreviewOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setVideoPreviewOpen(true);
+            }
+          }}
+        >
+          <video
+            className="catalog-app-detail__media-card-visual catalog-app-detail__media-card-visual--thumb"
+            playsInline
+            preload="metadata"
+            muted
+            poster={resolvedPoster}
+            src={resolved}
+          />
+          <span className="catalog-app-detail__media-play-hit" aria-hidden>
+            <span className="catalog-app-detail__media-play-circle">
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden focusable={false}>
+                <polygon fill="rgba(255,255,255,0.95)" points="9,7 17,12 9,17" />
+              </svg>
+            </span>
+          </span>
+        </div>
+      </figure>
+
+      <Modal
+        centered
+        rootClassName="catalog-app-detail__video-preview-modal"
+        destroyOnClose
+        open={videoPreviewOpen}
+        footer={null}
+        width="min(92vw, 900px)"
+        title={null}
+        zIndex={2110}
+        onCancel={() => setVideoPreviewOpen(false)}
+        styles={{
+          body: { padding: 12 }
+        }}
+      >
+        <video
+          className="catalog-app-detail__video-preview-player"
+          controls
+          playsInline
+          preload="metadata"
+          poster={resolvedPoster}
+          src={resolved}
+        />
+      </Modal>
+    </>
+  );
+};
+
+const CatalogDetailMediaImageTile = ({ item }: { item: AppMediaItem }) => {
+  const resolved = resolveAppAssetUrl(item.url);
+
+  return (
+    <figure className="catalog-app-detail__media-card">
+      <div className="catalog-app-detail__media-card-frame catalog-app-detail__media-card-frame--thumb">
+        <Image
+          rootClassName="catalog-app-detail__media-ant-image-root"
+          alt=""
+          src={resolved}
+          preview={{
+            mask: <span className="catalog-app-detail__media-zoom-hint">预览</span>
+          }}
+        />
+      </div>
+    </figure>
+  );
+};
 
 const HomePage: React.FC = () => {
   const [messageApi, contextHolder] = message.useMessage();
@@ -191,6 +300,7 @@ const HomePage: React.FC = () => {
   const [appPackageInfo, setAppPackageInfo] = useState<AppPackageUploadResult | null>(null);
   const [appCoverFile, setAppCoverFile] = useState<File | null>(null);
   const [appCoverUploading, setAppCoverUploading] = useState(false);
+  const [catalogMediaUploadKey, setCatalogMediaUploadKey] = useState<string | null>(null);
   const [categoryForm] = Form.useForm<CategoryFormValues>();
   const [appForm] = Form.useForm<AppFormValues>();
   const isAdmin = currentUser?.role === 'admin';
@@ -419,6 +529,19 @@ const HomePage: React.FC = () => {
     });
   }, [activeCategoryId, apps]);
 
+  const catalogDetailExtras = useMemo(() => {
+    if (!selectedApp) {
+      return { mediaSorted: [] as AppMediaItem[], hasTextDetail: false, hasSummary: false };
+    }
+    return {
+      mediaSorted: sortAppMediaItems(selectedApp.media),
+      hasTextDetail:
+        !!(selectedApp.description && selectedApp.description.trim()) ||
+        !!(selectedApp.content && selectedApp.content.trim()),
+      hasSummary: !!(selectedApp.summary && selectedApp.summary.trim())
+    };
+  }, [selectedApp]);
+
   const openCategoryCreate = () => {
     setEditingCategory(null);
     categoryForm.setFieldsValue({
@@ -466,7 +589,8 @@ const HomePage: React.FC = () => {
       accessLevel: 'login',
       summary: '',
       description: '',
-      cover: ''
+      cover: '',
+      media: []
     });
     setAppModalOpen(true);
   };
@@ -492,7 +616,8 @@ const HomePage: React.FC = () => {
       accessLevel: app.accessLevel || 'member',
       summary: app.summary,
       description: app.description,
-      cover: app.cover
+      cover: app.cover,
+      media: sortAppMediaItems(app.media)
     });
     setAppModalOpen(true);
   };
@@ -516,6 +641,47 @@ const HomePage: React.FC = () => {
     } finally {
       setAppCoverUploading(false);
     }
+  };
+
+  const uploadCatalogMediaRow = async (listName: number, slot: 'main' | 'poster', file: File) => {
+    const rowType = appForm.getFieldValue(['media', listName, 'type']) as AppMediaKind | undefined;
+    const fileType = slot === 'poster' ? 'poster' : rowType === 'video' ? 'video' : 'image';
+    const extOk =
+      slot === 'poster' || rowType !== 'video'
+        ? /\.(png|jpg|jpeg|webp|gif)$/i.test(file.name)
+        : /\.(mp4|webm|mov)$/i.test(file.name);
+    if (!extOk) {
+      messageApi.error(slot === 'poster' ? '封面仅支持 png/jpg/jpeg/webp/gif' : '请上传与类型匹配的图片或视频');
+      return false;
+    }
+
+    if (file.size > CATALOG_MEDIA_UPLOAD_MAX_BYTES) {
+      messageApi.error(fileType === 'video' ? '视频文件不能超过 20MB' : '文件大小不能超过 20MB');
+      return false;
+    }
+
+    setCatalogMediaUploadKey(`${listName}-${slot}`);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileType', fileType);
+      const data = await request<AppCatalogMediaUploadResult>('/api/apps/upload-media', {
+        method: 'POST',
+        data: formData
+      });
+      if (slot === 'poster') {
+        appForm.setFieldValue(['media', listName, 'poster'], data.url);
+        messageApi.success('封面上传成功');
+      } else {
+        appForm.setFieldValue(['media', listName, 'url'], data.url);
+        messageApi.success('资源上传成功');
+      }
+    } catch {
+      /* request 已弹错 */
+    } finally {
+      setCatalogMediaUploadKey(null);
+    }
+    return false;
   };
 
   const submitCategory = async () => {
@@ -722,7 +888,15 @@ const HomePage: React.FC = () => {
                         <div key={app._id} className="catalog-app-list__item">
                           <div
                             className="catalog-app-card"
+                            role="button"
+                            tabIndex={0}
                             onClick={() => void handleOpenAppDetail(app)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                void handleOpenAppDetail(app);
+                              }
+                            }}
                           >
                             <div className="catalog-app-card__cover">
                               {app.cover ? (
@@ -730,6 +904,12 @@ const HomePage: React.FC = () => {
                               ) : (
                                 <div className="catalog-app-card__cover-fallback">{app.name.slice(0, 1)}</div>
                               )}
+                            </div>
+                            <div className="catalog-app-card__body">
+                              <div className="catalog-app-card__title">{app.name}</div>
+                              {app.summary ? (
+                                <div className="catalog-app-card__summary">{app.summary}</div>
+                              ) : null}
                             </div>
                           </div>
                         </div>
@@ -799,20 +979,19 @@ const HomePage: React.FC = () => {
       </Modal>
 
       <Modal
-        title={selectedApp?.name || '应用详情'}
+        title={null}
         className="catalog-app-detail-modal"
         open={!!selectedApp}
         onCancel={() => setSelectedApp(null)}
-        width={640}
+        width={720}
         footer={
-          selectedApp
-            ? [
-                selectedApp.entryUrl ? (
-                  <Button key="visit" onClick={() => void handleVisitApp(selectedApp)}>
-                    访问应用
-                  </Button>
-                ) : null,
-                isAdmin ? (
+          selectedApp ? (
+            <div className="catalog-app-detail-modal__footer-inner">
+              <Button key="close" onClick={() => setSelectedApp(null)}>
+                关闭
+              </Button>
+              <Space wrap className="catalog-app-detail-modal__footer-actions">
+                {isAdmin ? (
                   <Popconfirm
                     key="delete"
                     title="确认删除该应用？"
@@ -820,61 +999,100 @@ const HomePage: React.FC = () => {
                   >
                     <Button danger>删除</Button>
                   </Popconfirm>
-                ) : null,
-                isAdmin ? (
-                  <Button
-                    key="edit"
-                    type="primary"
-                    onClick={() => selectedApp && openAppEdit(selectedApp)}
-                  >
+                ) : null}
+                {isAdmin ? (
+                  <Button key="edit" onClick={() => openAppEdit(selectedApp)}>
                     编辑
                   </Button>
-                ) : null
-              ]
-            : null
+                ) : null}
+                {selectedApp.entryUrl ? (
+                  <Button key="visit" type="primary" onClick={() => void handleVisitApp(selectedApp)}>
+                    访问应用
+                  </Button>
+                ) : null}
+              </Space>
+            </div>
+          ) : null
         }
       >
         {selectedApp ? (
           <div className="catalog-app-detail">
-            <div className="catalog-app-detail__hero">
-              <div className="catalog-app-detail__cover">
-                {selectedApp.cover ? (
-                  <img src={selectedApp.cover} alt={selectedApp.name} />
-                ) : (
-                  <div className="catalog-app-detail__cover-fallback">{selectedApp.name.slice(0, 1)}</div>
-                )}
-              </div>
-              <div className="catalog-app-detail__meta">
-                <div className="catalog-app-detail__item">
-                  <span>分类</span>
-                  <strong>{categoryNameOf(selectedApp.categoryId) || '--'}</strong>
+            <div className="catalog-app-detail__banner">
+              {selectedApp.cover ? (
+                <img src={selectedApp.cover} alt="" />
+              ) : (
+                <div className="catalog-app-detail__banner-fallback">{selectedApp.name.slice(0, 1)}</div>
+              )}
+              <div className="catalog-app-detail__banner-scrim" aria-hidden />
+              <div className="catalog-app-detail__banner-text">
+                <div className="catalog-app-detail__banner-eyebrow">
+                  {categoryNameOf(selectedApp.categoryId) || '应用'}
                 </div>
-                <div className="catalog-app-detail__item">
-                  <span>访问级别</span>
-                  <strong>
-                    {selectedApp.accessLevel === 'login'
-                      ? '登录可用'
-                      : selectedApp.accessLevel === 'explicit'
-                        ? '单独授权'
-                        : '会员'}
-                  </strong>
-                </div>
-                <div className="catalog-app-detail__item">
-                  <span>发布者</span>
-                  <strong>{selectedApp.publisher || '--'}</strong>
-                </div>
+                <h2 className="catalog-app-detail__banner-title">{selectedApp.name}</h2>
               </div>
             </div>
 
-            <div className="catalog-app-detail__section">
-              <div className="catalog-app-detail__item">
-                <span>摘要</span>
-                <strong>{selectedApp.summary || '--'}</strong>
+            <div className="catalog-app-detail__sheet">
+              {selectedApp.summary ? (
+                <p className="catalog-app-detail__lead">{selectedApp.summary}</p>
+              ) : null}
+
+              <div className="catalog-app-detail__chips">
+                <span className="catalog-app-detail__chip">
+                  访问：
+                  {selectedApp.accessLevel === 'login'
+                    ? '登录可用'
+                    : selectedApp.accessLevel === 'explicit'
+                      ? '单独授权'
+                      : '会员专享'}
+                </span>
+                {selectedApp.publisher ? (
+                  <span className="catalog-app-detail__chip">发布：{selectedApp.publisher}</span>
+                ) : null}
               </div>
-              <div className="catalog-app-detail__item">
-                <span>详细描述</span>
-                <strong>{selectedApp.description || '--'}</strong>
-              </div>
+
+              {catalogDetailExtras.mediaSorted.length ? (
+                <Image.PreviewGroup
+                  preview={{
+                    zIndex: 2100,
+                    movable: true
+                  }}
+                >
+                  <div className="catalog-app-detail__media-scroll">
+                    <div className="catalog-app-detail__media-track">
+                      {catalogDetailExtras.mediaSorted.map((item, index) =>
+                        item.type === 'video' ? (
+                          <CatalogDetailMediaVideoTile
+                            key={`media-${index}-${item.url}`}
+                            item={item}
+                          />
+                        ) : (
+                          <CatalogDetailMediaImageTile key={`media-${index}-${item.url}`} item={item} />
+                        )
+                      )}
+                    </div>
+                  </div>
+                </Image.PreviewGroup>
+              ) : null}
+
+              {catalogDetailExtras.hasTextDetail ? (
+                <div className="catalog-app-detail__article">
+                  <h3 className="catalog-app-detail__article-title">详情</h3>
+                  {selectedApp.description && selectedApp.description.trim() ? (
+                    <div className="catalog-app-detail__prose">{selectedApp.description}</div>
+                  ) : null}
+                  {selectedApp.content && selectedApp.content.trim() ? (
+                    <>
+                      {selectedApp.description && selectedApp.description.trim() ? (
+                        <h4 className="catalog-app-detail__article-subtitle">扩展说明</h4>
+                      ) : null}
+                      <div className="catalog-app-detail__prose">{selectedApp.content}</div>
+                    </>
+                  ) : null}
+                </div>
+              ) : !catalogDetailExtras.hasSummary && !catalogDetailExtras.mediaSorted.length ? (
+                <p className="catalog-app-detail__empty">暂无详细说明</p>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -1165,6 +1383,162 @@ const HomePage: React.FC = () => {
           </Form.Item>
           <Form.Item label="详细描述" name="description">
             <Input.TextArea rows={4} placeholder="请输入应用的详细描述" />
+          </Form.Item>
+
+          <Form.Item label="详情页图文/视频（展示在文字详情之上）">
+            <Form.List name="media">
+              {(fields, { add, remove }) => (
+                <div className="catalog-app-media-form">
+                  {fields.map((field) => {
+                    const { key, name, ...restField } = field;
+                    return (
+                      <div key={key} className="catalog-app-media-form__block">
+                        <div className="catalog-form-grid">
+                          <Form.Item
+                            {...restField}
+                            label="类型"
+                            name={[name, 'type']}
+                            rules={[{ required: true, message: '请选择类型' }]}
+                          >
+                            <Select
+                              options={[
+                                { label: '图片', value: 'image' },
+                                { label: '视频', value: 'video' }
+                              ]}
+                              onChange={() => {
+                                appForm.setFieldValue(['media', name, 'url'], '');
+                                appForm.setFieldValue(['media', name, 'poster'], '');
+                              }}
+                            />
+                          </Form.Item>
+                          <Form.Item
+                            {...restField}
+                            label="排序"
+                            name={[name, 'sort']}
+                            tooltip="数值越小越靠前；留空则按当前顺序"
+                          >
+                            <InputNumber min={0} style={{ width: '100%' }} placeholder="可选" />
+                          </Form.Item>
+                        </div>
+
+                        <Form.Item
+                          label="资源文件"
+                          tooltip="请先选择类型。本地上传单文件不超过 20MB（含图片与视频）。"
+                        >
+                          <Form.Item noStyle dependencies={[['media', name, 'type']]}>
+                            {({ getFieldValue }) => {
+                              const rowType = getFieldValue(['media', name, 'type']);
+                              const accept =
+                                rowType === 'video' ? '.mp4,.webm,.mov' : '.png,.jpg,.jpeg,.webp,.gif';
+                              const uploading = catalogMediaUploadKey === `${name}-main`;
+                              return (
+                                <Upload
+                                  accept={accept}
+                                  maxCount={1}
+                                  showUploadList={false}
+                                  beforeUpload={(file) => uploadCatalogMediaRow(name, 'main', file)}
+                                >
+                                  <Button loading={uploading}>上传{rowType === 'video' ? '视频' : '图片'}</Button>
+                                </Upload>
+                              );
+                            }}
+                          </Form.Item>
+                        </Form.Item>
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'url']}
+                          hidden
+                          rules={[{ required: true, message: '请上传资源文件' }]}
+                        >
+                          <Input />
+                        </Form.Item>
+                        <Form.Item noStyle dependencies={[['media', name, 'url'], ['media', name, 'type']]}>
+                          {({ getFieldValue }) => {
+                            const urlVal = getFieldValue(['media', name, 'url']);
+                            const rowType = getFieldValue(['media', name, 'type']);
+                            if (!urlVal?.trim()) {
+                              return null;
+                            }
+                            const resolved = resolveAppAssetUrl(urlVal);
+                            return rowType === 'video' ? (
+                              <div className="catalog-app-media-form__preview-wrap">
+                                <video
+                                  className="catalog-app-media-form__preview-video"
+                                  src={resolved}
+                                  controls
+                                  playsInline
+                                />
+                              </div>
+                            ) : (
+                              <div className="catalog-app-media-form__preview-wrap">
+                                <img className="catalog-app-media-form__preview-img" src={resolved} alt="" />
+                              </div>
+                            );
+                          }}
+                        </Form.Item>
+                        <Form.Item noStyle dependencies={[['media', name, 'type']]}>
+                          {({ getFieldValue }) =>
+                            getFieldValue(['media', name, 'type']) === 'video' ? (
+                              <>
+                                <Form.Item label="视频封面（可选）" tooltip="用于视频未播放时的缩略图">
+                                  <Upload
+                                    accept=".png,.jpg,.jpeg,.webp,.gif"
+                                    maxCount={1}
+                                    showUploadList={false}
+                                    beforeUpload={(file) => uploadCatalogMediaRow(name, 'poster', file)}
+                                  >
+                                    <Button
+                                      loading={catalogMediaUploadKey === `${name}-poster`}
+                                    >
+                                      上传封面图
+                                    </Button>
+                                  </Upload>
+                                </Form.Item>
+                                <Form.Item {...restField} name={[name, 'poster']} hidden>
+                                  <Input />
+                                </Form.Item>
+                                <Form.Item noStyle dependencies={[['media', name, 'poster']]}>
+                                  {({ getFieldValue }) => {
+                                    const posterVal = getFieldValue(['media', name, 'poster']);
+                                    if (!posterVal?.trim()) {
+                                      return null;
+                                    }
+                                    return (
+                                      <div className="catalog-app-media-form__preview-wrap">
+                                        <img
+                                          className="catalog-app-media-form__preview-img"
+                                          src={resolveAppAssetUrl(posterVal)}
+                                          alt=""
+                                        />
+                                      </div>
+                                    );
+                                  }}
+                                </Form.Item>
+                              </>
+                            ) : null
+                          }
+                        </Form.Item>
+                        <Form.Item {...restField} label="配图说明（可选）" name={[name, 'caption']}>
+                          <Input placeholder="简短说明文案" />
+                        </Form.Item>
+                        <Button type="link" danger onClick={() => remove(name)}>
+                          移除该条
+                        </Button>
+                      </div>
+                    );
+                  })}
+                  <Button
+                    type="dashed"
+                    block
+                    onClick={() =>
+                      add({ type: 'image', url: '', caption: '', sort: fields.length } as AppMediaItem)
+                    }
+                  >
+                    添加图文/视频条目
+                  </Button>
+                </div>
+              )}
+            </Form.List>
           </Form.Item>
 
           <div className="catalog-form-grid catalog-form-grid--single">

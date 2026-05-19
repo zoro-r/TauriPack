@@ -15,6 +15,14 @@ export interface CategoryInput {
   isActive?: boolean;
 }
 
+export interface AppMediaInput {
+  type: 'image' | 'video';
+  url: string;
+  poster?: string;
+  caption?: string;
+  sort?: number;
+}
+
 export interface AppItemInput {
   name: string;
   categoryId: string;
@@ -24,6 +32,7 @@ export interface AppItemInput {
   cover?: string;
   publisher?: string;
   content?: string;
+  media?: AppMediaInput[];
   slug?: string;
   packageName?: string;
   packageUrl?: string;
@@ -41,6 +50,23 @@ export interface AppListViewer {
 }
 
 const normalizeText = (value?: string) => value?.trim() || undefined;
+
+const normalizeAppMediaItems = (items?: AppMediaInput[]) => {
+  if (!items?.length) {
+    return [];
+  }
+  const rows = items
+    .filter((item) => item && typeof item.url === 'string' && item.url.trim())
+    .map((item, index) => ({
+      type: item.type === 'video' ? ('video' as const) : ('image' as const),
+      url: item.url.trim(),
+      poster: normalizeText(item.poster),
+      caption: normalizeText(item.caption),
+      sort: typeof item.sort === 'number' ? item.sort : index
+    }));
+  rows.sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+  return rows;
+};
 
 const ensureObjectId = (value: string, label: string) => {
   if (!mongoose.Types.ObjectId.isValid(value)) {
@@ -113,7 +139,7 @@ const mapCategoryInput = (input: CategoryInput) => ({
   isActive: typeof input.isActive === 'boolean' ? input.isActive : true
 });
 
-const mapAppInput = (input: AppItemInput) => ({
+const mapAppPayloadBase = (input: AppItemInput) => ({
   name: input.name.trim(),
   categoryId: input.categoryId,
   accessLevel: input.accessLevel || 'login',
@@ -125,6 +151,17 @@ const mapAppInput = (input: AppItemInput) => ({
   packageName: normalizeText(input.packageName),
   packageUrl: normalizeText(input.packageUrl),
   entryUrl: normalizeText(input.entryUrl)
+});
+
+const mapAppPayloadForCreate = (input: AppItemInput) => ({
+  ...mapAppPayloadBase(input),
+  media: normalizeAppMediaItems(input.media)
+});
+
+/** 更新时若不传 media 字段则保留库里原有条目，避免无意间清空 */
+const mapAppPayloadForUpdate = (input: AppItemInput) => ({
+  ...mapAppPayloadBase(input),
+  ...(input.media !== undefined ? { media: normalizeAppMediaItems(input.media) } : {})
 });
 
 const validateCategoryInput = (input: Partial<CategoryInput>) => {
@@ -312,7 +349,7 @@ export const getAppDetail = async (id: string) => {
 
 export const createApp = async (input: AppItemInput) => {
   validateAppInput(input);
-  const payload = mapAppInput(input);
+  const payload = mapAppPayloadForCreate(input);
   const slug = normalizeText(input.slug) || (await buildUniqueAppSlug(payload.name));
   await ensureCategoryExists(payload.categoryId);
   const existing = await AppItemModel.findOne({ slug }).lean();
@@ -325,7 +362,7 @@ export const createApp = async (input: AppItemInput) => {
 export const updateApp = async (id: string, input: AppItemInput) => {
   ensureObjectId(id, 'appId');
   validateAppInput(input);
-  const payload = mapAppInput(input);
+  const payload = mapAppPayloadForUpdate(input);
   await ensureCategoryExists(payload.categoryId);
   const existing = await AppItemModel.findById(id).lean();
   if (!existing) {

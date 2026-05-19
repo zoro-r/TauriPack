@@ -15,6 +15,11 @@ import {
   type CategoryInput
 } from '@/services/appCatalogService';
 import { type UploadedCoverFile, uploadAppCover } from '@/services/appCoverService';
+import {
+  type UploadedCatalogMediaFile,
+  normalizeCatalogMediaKind,
+  uploadAppCatalogMedia
+} from '@/services/appCatalogMediaService';
 import { type UploadedPackageFile, uploadAppPackage } from '@/services/appPackageService';
 import { getBearerToken, requireAdmin, requireUser } from '@/middleware/auth';
 import { verifyAccessToken } from '@/services/authService';
@@ -141,6 +146,18 @@ export const postAppCover = async (ctx: Router.RouterContext) => {
     ctx.body = success(await uploadAppCover(file), 'app cover uploaded');
   } catch (err) {
     ctx.body = errorResponse('upload app cover failed', err);
+  }
+};
+
+export const postAppCatalogMedia = async (ctx: Router.RouterContext) => {
+  try {
+    await requireAdmin(ctx);
+    const file = ctx.file as UploadedCatalogMediaFile | undefined;
+    const body = (ctx.request.body || {}) as { fileType?: string };
+    const kind = normalizeCatalogMediaKind(body.fileType);
+    ctx.body = success(await uploadAppCatalogMedia(file, kind), 'media uploaded');
+  } catch (err) {
+    ctx.body = errorResponse('upload catalog media failed', err);
   }
 };
 

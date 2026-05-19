@@ -5,6 +5,7 @@ import {
   getAppList,
   getCategoryList,
   postApp,
+  postAppCatalogMedia,
   postAppCover,
   postAppPackage,
   postCategory,
@@ -13,6 +14,7 @@ import {
   removeApp,
   removeCategory
 } from '@/controllers/appCatalogController';
+import { appCatalogMediaUpload } from '@/services/appCatalogMediaService';
 import { appCoverUpload } from '@/services/appCoverService';
 import { appPackageUpload } from '@/services/appPackageService';
 
@@ -26,6 +28,11 @@ export default function appCatalogRouter(router: Router) {
   router.get('/api/apps/:id/access', getAppAccess);
   router.get('/api/apps/:id', getAppById);
   router.post('/api/apps/upload-cover', appCoverUpload.single('file'), postAppCover);
+  router.post(
+    '/api/apps/upload-media',
+    appCatalogMediaUpload.single('file'),
+    postAppCatalogMedia
+  );
   router.post('/api/apps/upload-package', appPackageUpload.single('file'), postAppPackage);
   router.post('/api/apps', postApp);
   router.put('/api/apps/:id', putApp);
