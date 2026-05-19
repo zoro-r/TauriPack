@@ -1,0 +1,44 @@
+{
+  "name": "basic-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal Koa TypeScript service",
+  "main": "dist/app.js",
+  "scripts": {
+    "start": "ts-node -r tsconfig-paths/register src/app.ts",
+    "dev": "ts-node-dev -r tsconfig-paths/register --respawn src/app.ts",
+    "build": "tsc && tsc-alias",
+    "serve": "NODE_ENV=production PORT=3698 node dist/app.js",
+    "convert-icon": "ts-node -r tsconfig-paths/register src/scripts/convertIcon.ts"
+  },
+  "dependencies": {
+    "@koa/cors": "^5.0.0",
+    "@koa/multer": "^4.0.0",
+    "@koa/router": "^13.1.0",
+    "@fiahfy/icns": "^0.0.7",
+    "dotenv": "^16.5.0",
+    "koa": "^3.0.0",
+    "koa-bodyparser": "^4.4.1",
+    "koa-logger": "^3.2.1",
+    "koa-static": "^5.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.14.1",
+    "png-to-ico": "^2.1.8",
+    "sharp": "^0.34.3"
+  },
+  "devDependencies": {
+    "@types/koa": "^2.15.0",
+    "@types/koa-bodyparser": "^4.3.12",
+    "@types/koa-logger": "^3.1.5",
+    "@types/koa-static": "^4.0.4",
+    "@types/koa__cors": "^5.0.0",
+    "@types/koa__multer": "^2.0.7",
+    "@types/koa__router": "^12.0.4",
+    "@types/jsonwebtoken": "^9.0.9",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "tsc-alias": "^1.8.10",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.8.3"
+  }
+}

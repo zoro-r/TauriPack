@@ -1,0 +1,19 @@
+node_modules
+
+# Build outputs
+dist
+build
+coverage
+.umi
+.umi-production
+
+# Workspace caches
+.turbo
+
+# Rust / Tauri build artifacts
+target
+apps/packer-core/src-tauri/target
+
+# Uploaded/generated assets
+apps/basic-server/uploads/
+*.zip

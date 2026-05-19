@@ -1,0 +1,16 @@
+{
+  "name": "tauripack",
+  "private": true,
+  "packageManager": "pnpm@8.15.0",
+  "scripts": {
+    "dev": "turbo run dev tauri:dev --parallel",
+    "build": "turbo run build",
+    "server": "cd apps/basic-server && npm run serve"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  },
+  "workspaces": [
+    "apps/*"
+  ]
+}
