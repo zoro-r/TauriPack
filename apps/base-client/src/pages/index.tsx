@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Button,
   Divider,
   Empty,
   Form,
-  Image,
   Input,
   InputNumber,
   Modal,
@@ -157,6 +156,20 @@ const categoryNameOf = (categoryId: AppItem['categoryId']) =>
 const sortAppMediaItems = (media?: AppMediaItem[]) =>
   [...(media ?? [])].sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
 
+const CATALOG_DETAIL_MEDIA_PER_PAGE = 3;
+const CATALOG_DETAIL_MEDIA_CAROUSEL_INTERVAL_MS = 4500;
+
+const chunkItems = <T,>(items: T[], size: number): T[][] => {
+  if (size < 1) {
+    return items.length ? [items] : [];
+  }
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+};
+
 const resolveAppAssetUrl = (value?: string) => {
   if (!value) {
     return '';
@@ -184,87 +197,266 @@ const CATALOG_MEDIA_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const qrImageOf = (value: string) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(value)}`;
 
-const CatalogDetailMediaVideoTile = ({ item }: { item: AppMediaItem }) => {
-  const [videoPreviewOpen, setVideoPreviewOpen] = useState(false);
-  const resolved = resolveAppAssetUrl(item.url);
-  const resolvedPoster = item.poster ? resolveAppAssetUrl(item.poster) : undefined;
+const CatalogDetailMediaPreviewModal = ({
+  open,
+  items,
+  activeIndex,
+  onClose,
+  onChangeIndex
+}: {
+  open: boolean;
+  items: AppMediaItem[];
+  activeIndex: number;
+  onClose: () => void;
+  onChangeIndex: (nextIndex: number) => void;
+}) => {
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const total = items.length;
+  const safeActiveIndex = total > 0 ? ((activeIndex % total) + total) % total : 0;
+  const currentItem = items[safeActiveIndex];
+
+  useEffect(() => {
+    if (!open) {
+      previewVideoRef.current?.pause();
+      return undefined;
+    }
+
+    if (!currentItem || currentItem.type !== 'video') {
+      previewVideoRef.current?.pause();
+      return undefined;
+    }
+
+    const el = previewVideoRef.current;
+    if (!el) {
+      return undefined;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      void el.play().catch(() => {});
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      el.pause();
+    };
+  }, [currentItem?.type, currentItem?.url, open]);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (total < 2) {
+        return;
+      }
+
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        onChangeIndex((safeActiveIndex - 1 + total) % total);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        onChangeIndex((safeActiveIndex + 1) % total);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onChangeIndex, onClose, open, safeActiveIndex, total]);
 
   return (
-    <>
-      <figure className="catalog-app-detail__media-card">
-        <div
-          className="catalog-app-detail__media-card-frame catalog-app-detail__media-card-frame--video-hit"
-          role="button"
-          tabIndex={0}
-          aria-label="预览视频"
-          onClick={() => setVideoPreviewOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setVideoPreviewOpen(true);
-            }
-          }}
-        >
-          <video
-            className="catalog-app-detail__media-card-visual catalog-app-detail__media-card-visual--thumb"
-            playsInline
-            preload="metadata"
-            muted
-            poster={resolvedPoster}
-            src={resolved}
-          />
-          <span className="catalog-app-detail__media-play-hit" aria-hidden>
-            <span className="catalog-app-detail__media-play-circle">
-              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden focusable={false}>
-                <polygon fill="rgba(255,255,255,0.95)" points="9,7 17,12 9,17" />
-              </svg>
-            </span>
-          </span>
-        </div>
-      </figure>
-
       <Modal
         centered
-        rootClassName="catalog-app-detail__video-preview-modal"
+        rootClassName="catalog-app-detail__media-preview-modal"
         destroyOnClose
-        open={videoPreviewOpen}
+        open={open}
         footer={null}
-        width="min(92vw, 900px)"
+        keyboard={false}
+        maskClosable
+        width="min(94vw, 1240px)"
         title={null}
-        zIndex={2110}
-        onCancel={() => setVideoPreviewOpen(false)}
+        zIndex={2120}
+        onCancel={onClose}
         styles={{
-          body: { padding: 12 }
+          body: { padding: 0, background: 'transparent' },
+          content: { padding: 0, background: 'transparent', boxShadow: 'none' }
         }}
       >
-        <video
-          className="catalog-app-detail__video-preview-player"
-          controls
-          playsInline
-          preload="metadata"
-          poster={resolvedPoster}
-          src={resolved}
-        />
+        {currentItem ? (
+          <div className="catalog-app-detail__media-preview-shell">
+            {total > 1 ? (
+              <button
+                type="button"
+                className="catalog-app-detail__media-preview-arrow catalog-app-detail__media-preview-arrow--prev"
+                aria-label="上一项"
+                onClick={() => onChangeIndex((safeActiveIndex - 1 + total) % total)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden focusable={false}>
+                  <path d="M15.5 5.5 9 12l6.5 6.5" />
+                </svg>
+              </button>
+            ) : null}
+
+            {total > 1 ? (
+              <button
+                type="button"
+                className="catalog-app-detail__media-preview-arrow catalog-app-detail__media-preview-arrow--next"
+                aria-label="下一项"
+                onClick={() => onChangeIndex((safeActiveIndex + 1) % total)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden focusable={false}>
+                  <path d="M8.5 5.5 15 12l-6.5 6.5" />
+                </svg>
+              </button>
+            ) : null}
+
+            <div className="catalog-app-detail__media-preview-stage">
+              <div
+                key={`${currentItem.type}-${currentItem.url}`}
+                className={`catalog-app-detail__media-preview-frame catalog-app-detail__media-preview-frame--${currentItem.type}${
+                  currentItem.caption?.trim() ? ' catalog-app-detail__media-preview-frame--captioned' : ''
+                }`}
+              >
+                <div className="catalog-app-detail__media-preview-mat">
+                  {currentItem.type === 'video' ? (
+                    <video
+                      ref={previewVideoRef}
+                      className="catalog-app-detail__media-preview-video"
+                      controls
+                      playsInline
+                      preload="metadata"
+                      autoPlay
+                      poster={currentItem.poster ? resolveAppAssetUrl(currentItem.poster) : undefined}
+                      controlsList="nodownload noplaybackrate noremoteplayback"
+                      disablePictureInPicture
+                      src={resolveAppAssetUrl(currentItem.url)}
+                    />
+                  ) : (
+                    <img
+                      className="catalog-app-detail__media-preview-image"
+                      src={resolveAppAssetUrl(currentItem.url)}
+                      alt={currentItem.caption?.trim() || '图片预览'}
+                    />
+                  )}
+                </div>
+                {currentItem.caption?.trim() ? (
+                  <div className="catalog-app-detail__media-preview-footer">
+                    <span className="catalog-app-detail__media-preview-pill">
+                      {currentItem.caption.trim()}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {total > 1 ? (
+              <div className="catalog-app-detail__media-preview-thumbs" role="tablist" aria-label="媒体缩略图">
+                <div className="catalog-app-detail__media-preview-thumbs-track">
+                  {items.map((item, idx) => {
+                    const active = idx === safeActiveIndex;
+                    const thumbSrc = resolveAppAssetUrl(item.url);
+                    const thumbPoster = item.poster ? resolveAppAssetUrl(item.poster) : undefined;
+                    return (
+                      <button
+                        key={`thumb-${item.type}-${item.url}-${idx}`}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        className={`catalog-app-detail__media-preview-thumb ${active ? 'is-active' : ''}`}
+                        onClick={() => onChangeIndex(idx)}
+                      >
+                        {item.type === 'video' ? (
+                          <video
+                            className="catalog-app-detail__media-preview-thumb-visual"
+                            src={thumbSrc}
+                            poster={thumbPoster}
+                            muted
+                            playsInline
+                            preload="metadata"
+                            aria-hidden
+                          />
+                        ) : (
+                          <img
+                            className="catalog-app-detail__media-preview-thumb-visual"
+                            src={thumbSrc}
+                            alt=""
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </Modal>
-    </>
   );
 };
 
-const CatalogDetailMediaImageTile = ({ item }: { item: AppMediaItem }) => {
+const CatalogDetailMediaImageTile = ({
+  item,
+  onOpen
+}: {
+  item: AppMediaItem;
+  onOpen: () => void;
+}) => {
   const resolved = resolveAppAssetUrl(item.url);
 
   return (
     <figure className="catalog-app-detail__media-card">
-      <div className="catalog-app-detail__media-card-frame catalog-app-detail__media-card-frame--thumb">
-        <Image
-          rootClassName="catalog-app-detail__media-ant-image-root"
-          alt=""
+      <button
+        type="button"
+        className="catalog-app-detail__media-card-frame catalog-app-detail__media-card-frame--thumb"
+        aria-label="预览图片"
+        onClick={onOpen}
+      >
+        <img className="catalog-app-detail__media-card-visual" src={resolved} alt="" />
+      </button>
+    </figure>
+  );
+};
+
+const CatalogDetailMediaVideoTile = ({
+  item,
+  onOpen
+}: {
+  item: AppMediaItem;
+  onOpen: () => void;
+}) => {
+  const resolved = resolveAppAssetUrl(item.url);
+  const resolvedPoster = item.poster ? resolveAppAssetUrl(item.poster) : undefined;
+
+  return (
+    <figure className="catalog-app-detail__media-card">
+      <button
+        type="button"
+        className="catalog-app-detail__media-card-frame catalog-app-detail__media-card-frame--video-hit"
+        aria-label="预览视频"
+        onClick={onOpen}
+      >
+        <video
+          className="catalog-app-detail__media-card-visual catalog-app-detail__media-card-visual--thumb"
+          playsInline
+          preload="metadata"
+          muted
+          poster={resolvedPoster}
           src={resolved}
-          preview={{
-            mask: <span className="catalog-app-detail__media-zoom-hint">预览</span>
-          }}
         />
-      </div>
+        <span className="catalog-app-detail__media-play-hit" aria-hidden>
+          <span className="catalog-app-detail__media-play-circle">
+            <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden focusable={false}>
+              <polygon fill="rgba(255,255,255,0.95)" points="8,5.5 18,12 8,18.5" />
+            </svg>
+          </span>
+        </span>
+      </button>
     </figure>
   );
 };
@@ -301,6 +493,9 @@ const HomePage: React.FC = () => {
   const [appCoverFile, setAppCoverFile] = useState<File | null>(null);
   const [appCoverUploading, setAppCoverUploading] = useState(false);
   const [catalogMediaUploadKey, setCatalogMediaUploadKey] = useState<string | null>(null);
+  const [mediaPreviewIndex, setMediaPreviewIndex] = useState<number | null>(null);
+  const [mediaCarouselPage, setMediaCarouselPage] = useState(0);
+  const [mediaCarouselPaused, setMediaCarouselPaused] = useState(false);
   const [categoryForm] = Form.useForm<CategoryFormValues>();
   const [appForm] = Form.useForm<AppFormValues>();
   const isAdmin = currentUser?.role === 'admin';
@@ -540,6 +735,37 @@ const HomePage: React.FC = () => {
         !!(selectedApp.content && selectedApp.content.trim()),
       hasSummary: !!(selectedApp.summary && selectedApp.summary.trim())
     };
+  }, [selectedApp]);
+
+  const catalogMediaPages = useMemo(
+    () => chunkItems(catalogDetailExtras.mediaSorted, CATALOG_DETAIL_MEDIA_PER_PAGE),
+    [catalogDetailExtras.mediaSorted]
+  );
+
+  useEffect(() => {
+    setMediaCarouselPage(0);
+  }, [selectedApp?._id]);
+
+  useEffect(() => {
+    setMediaCarouselPage((p) =>
+      catalogMediaPages.length ? Math.min(p, catalogMediaPages.length - 1) : 0
+    );
+  }, [catalogMediaPages.length]);
+
+  useEffect(() => {
+    if (!selectedApp || catalogMediaPages.length <= 1 || mediaCarouselPaused) {
+      return undefined;
+    }
+    const id = window.setInterval(() => {
+      setMediaCarouselPage((p) => (p + 1) % catalogMediaPages.length);
+    }, CATALOG_DETAIL_MEDIA_CAROUSEL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [selectedApp, catalogMediaPages.length, mediaCarouselPaused]);
+
+  useEffect(() => {
+    if (!selectedApp) {
+      setMediaPreviewIndex(null);
+    }
   }, [selectedApp]);
 
   const openCategoryCreate = () => {
@@ -1037,42 +1263,85 @@ const HomePage: React.FC = () => {
                 <p className="catalog-app-detail__lead">{selectedApp.summary}</p>
               ) : null}
 
-              <div className="catalog-app-detail__chips">
-                <span className="catalog-app-detail__chip">
-                  访问：
-                  {selectedApp.accessLevel === 'login'
-                    ? '登录可用'
-                    : selectedApp.accessLevel === 'explicit'
-                      ? '单独授权'
-                      : '会员专享'}
-                </span>
-                {selectedApp.publisher ? (
-                  <span className="catalog-app-detail__chip">发布：{selectedApp.publisher}</span>
-                ) : null}
-              </div>
-
               {catalogDetailExtras.mediaSorted.length ? (
-                <Image.PreviewGroup
-                  preview={{
-                    zIndex: 2100,
-                    movable: true
-                  }}
-                >
-                  <div className="catalog-app-detail__media-scroll">
-                    <div className="catalog-app-detail__media-track">
-                      {catalogDetailExtras.mediaSorted.map((item, index) =>
-                        item.type === 'video' ? (
-                          <CatalogDetailMediaVideoTile
-                            key={`media-${index}-${item.url}`}
-                            item={item}
-                          />
-                        ) : (
-                          <CatalogDetailMediaImageTile key={`media-${index}-${item.url}`} item={item} />
-                        )
-                      )}
+                <>
+                  <div
+                    className={`catalog-app-detail__media-carousel${
+                      catalogMediaPages.length > 1
+                        ? ' catalog-app-detail__media-carousel--has-pages'
+                        : ''
+                    }`}
+                    style={
+                      {
+                        ['--carousel-page-count' as string]: catalogMediaPages.length
+                      } as React.CSSProperties
+                    }
+                    onMouseEnter={() => setMediaCarouselPaused(true)}
+                    onMouseLeave={() => setMediaCarouselPaused(false)}
+                  >
+                    <div className="catalog-app-detail__media-carousel__viewport">
+                      <div
+                        className="catalog-app-detail__media-carousel__track"
+                        style={{
+                          width: `${catalogMediaPages.length * 100}%`,
+                          transform: `translateX(-${(100 / catalogMediaPages.length) * mediaCarouselPage}%)`
+                        }}
+                      >
+                        {catalogMediaPages.map((group, pi) => (
+                          <div
+                            key={`media-page-${pi}`}
+                            className="catalog-app-detail__media-carousel__slide"
+                          >
+                            {group.map((item, idx) => {
+                              const globalIndex = pi * CATALOG_DETAIL_MEDIA_PER_PAGE + idx;
+                              return item.type === 'video' ? (
+                                <CatalogDetailMediaVideoTile
+                                  key={`media-${globalIndex}-${item.url}`}
+                                  item={item}
+                                  onOpen={() => setMediaPreviewIndex(globalIndex)}
+                                />
+                              ) : (
+                                <CatalogDetailMediaImageTile
+                                  key={`media-${globalIndex}-${item.url}`}
+                                  item={item}
+                                  onOpen={() => setMediaPreviewIndex(globalIndex)}
+                                />
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
                     </div>
+                    {catalogMediaPages.length > 1 ? (
+                      <div
+                        className="catalog-app-detail__media-carousel__dots"
+                        role="tablist"
+                        aria-label="图文分页"
+                      >
+                        {catalogMediaPages.map((_, pi) => (
+                          <button
+                            key={`media-dot-${pi}`}
+                            type="button"
+                            role="tab"
+                            aria-selected={pi === mediaCarouselPage}
+                            aria-label={`第 ${pi + 1} 组`}
+                            className={`catalog-app-detail__media-carousel__dot ${
+                              pi === mediaCarouselPage ? 'is-active' : ''
+                            }`}
+                            onClick={() => setMediaCarouselPage(pi)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                </Image.PreviewGroup>
+                  <CatalogDetailMediaPreviewModal
+                    open={mediaPreviewIndex !== null}
+                    items={catalogDetailExtras.mediaSorted}
+                    activeIndex={mediaPreviewIndex ?? 0}
+                    onClose={() => setMediaPreviewIndex(null)}
+                    onChangeIndex={setMediaPreviewIndex}
+                  />
+                </>
               ) : null}
 
               {catalogDetailExtras.hasTextDetail ? (
