@@ -1,6 +1,7 @@
 import type Router from '@koa/router';
-import { requireAdmin, requireUser } from '@/middleware/auth';
+import { requireAdmin } from '@/middleware/auth';
 import {
+  buildRedeemCodesExportXlsx,
   createRedeemBatch,
   generateRedeemCodes,
   listRedeemBatches,
@@ -45,6 +46,25 @@ export const getAdminRedeemCodes = async (ctx: Router.RouterContext) => {
     ctx.body = success(await listRedeemCodes(ctx.query as any));
   } catch (err) {
     ctx.body = errorResponse('get redeem codes failed', err);
+  }
+};
+
+export const getAdminRedeemCodesExport = async (ctx: Router.RouterContext) => {
+  try {
+    await requireAdmin(ctx);
+    const { buffer, rowCount, totalMatching, truncated } = await buildRedeemCodesExportXlsx(ctx.query as any);
+    const filename = `redeem-codes-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.xlsx`;
+    ctx.set(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    ctx.set('X-Export-Row-Count', String(rowCount));
+    ctx.set('X-Export-Total-Matching', String(totalMatching));
+    ctx.set('X-Export-Truncated', truncated ? '1' : '0');
+    ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    ctx.body = buffer;
+  } catch (err) {
+    ctx.body = errorResponse('export redeem codes failed', err);
   }
 };
 

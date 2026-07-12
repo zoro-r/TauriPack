@@ -3,6 +3,9 @@ import { Button, Descriptions, Input, Modal, Select, Space, Table, Tag, Typograp
 import type { ColumnsType } from 'antd/es/table';
 import request from '../../utils/request';
 import { formatDateTime } from '../../utils/auth';
+import { serialColumn } from '../../utils/tableColumns';
+
+const ORDER_LIST_DEFAULT_PAGE_SIZE = 20;
 
 interface AdminOrderItem {
   _id: string;
@@ -99,8 +102,17 @@ const OrdersPage: React.FC = () => {
   const [filters, setFilters] = useState<OrderFilters>({
     status: 'paid'
   });
+  const [listPagination, setListPagination] = useState({
+    current: 1,
+    pageSize: ORDER_LIST_DEFAULT_PAGE_SIZE,
+    total: 0
+  });
 
-  const loadOrders = async (nextFilters: OrderFilters = filters) => {
+  const loadOrders = async (
+    nextFilters: OrderFilters = filters,
+    page: number = listPagination.current,
+    pageSize: number = listPagination.pageSize
+  ) => {
     setLoading(true);
     try {
       const data = await request<PagedResult<AdminOrderItem>>('/api/admin/member/orders', {
@@ -109,10 +121,17 @@ const OrdersPage: React.FC = () => {
           userKeyword: nextFilters.userKeyword?.trim() || undefined,
           status: nextFilters.status || undefined,
           orderType: nextFilters.orderType || undefined,
-          payChannel: nextFilters.payChannel || undefined
+          payChannel: nextFilters.payChannel || undefined,
+          page,
+          pageSize
         }
       });
       setOrders(data.items);
+      setListPagination({
+        current: data.page,
+        pageSize: data.pageSize,
+        total: data.total
+      });
     } finally {
       setLoading(false);
     }
@@ -147,7 +166,7 @@ const OrdersPage: React.FC = () => {
         const detail = await request<AdminOrderItem>(`/api/admin/member/orders/${order._id}`);
         setSelectedOrder(detail);
       }
-      await loadOrders(filters);
+      await loadOrders(filters, listPagination.current, listPagination.pageSize);
     } finally {
       setSyncingOrderId(undefined);
     }
@@ -161,7 +180,7 @@ const OrdersPage: React.FC = () => {
   };
 
   const submitSearch = async () => {
-    await loadOrders(filters);
+    await loadOrders(filters, 1, listPagination.pageSize);
   };
 
   const resetSearch = async () => {
@@ -169,10 +188,11 @@ const OrdersPage: React.FC = () => {
       status: 'paid'
     };
     setFilters(nextFilters);
-    await loadOrders(nextFilters);
+    await loadOrders(nextFilters, 1, ORDER_LIST_DEFAULT_PAGE_SIZE);
   };
 
   const columns: ColumnsType<AdminOrderItem> = [
+    serialColumn<AdminOrderItem>(listPagination.current, listPagination.pageSize),
     {
       title: '订单号',
       dataIndex: 'orderNo'
@@ -302,7 +322,7 @@ const OrdersPage: React.FC = () => {
               查询
             </Button>
             <Button onClick={resetSearch}>重置</Button>
-            <Button onClick={() => loadOrders(filters)}>刷新订单</Button>
+            <Button onClick={() => loadOrders(filters, listPagination.current, listPagination.pageSize)}>刷新订单</Button>
           </Space>
         </div>
         <Table
@@ -310,8 +330,16 @@ const OrdersPage: React.FC = () => {
           columns={columns}
           dataSource={orders}
           loading={loading}
-          pagination={false}
-          scroll={{ x: 1100 }}
+          pagination={{
+            current: listPagination.current,
+            pageSize: listPagination.pageSize,
+            total: listPagination.total,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100'],
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (page, pageSize) => void loadOrders(filters, page, pageSize)
+          }}
+          scroll={{ x: 1180 }}
         />
       </main>
 

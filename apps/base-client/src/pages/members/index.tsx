@@ -3,6 +3,9 @@ import { Avatar, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Sp
 import type { ColumnsType } from 'antd/es/table';
 import request from '../../utils/request';
 import { formatDateTime, nameInitial } from '../../utils/auth';
+import { serialColumn } from '../../utils/tableColumns';
+
+const MEMBER_LIST_DEFAULT_PAGE_SIZE = 20;
 
 interface AdminMemberSummary {
   isMember?: boolean;
@@ -87,18 +90,34 @@ const MembersPage: React.FC = () => {
   const [form] = Form.useForm<MemberAdjustFormValues>();
   const [planForm] = Form.useForm<MemberPlanFormValues>();
   const [filters, setFilters] = useState<MemberFilters>({});
+  const [listPagination, setListPagination] = useState({
+    current: 1,
+    pageSize: MEMBER_LIST_DEFAULT_PAGE_SIZE,
+    total: 0
+  });
 
-  const loadUsers = async (nextFilters: MemberFilters = filters) => {
+  const loadUsers = async (
+    nextFilters: MemberFilters = filters,
+    page: number = listPagination.current,
+    pageSize: number = listPagination.pageSize
+  ) => {
     setLoading(true);
     try {
       const data = await request<PagedResult<AdminUserItem>>('/api/admin/users', {
         params: {
           keyword: nextFilters.keyword?.trim() || undefined,
           role: nextFilters.role || undefined,
-          memberStatus: nextFilters.memberStatus || undefined
+          memberStatus: nextFilters.memberStatus || undefined,
+          page,
+          pageSize
         }
       });
       setUsers(data.items);
+      setListPagination({
+        current: data.page,
+        pageSize: data.pageSize,
+        total: data.total
+      });
     } finally {
       setLoading(false);
     }
@@ -127,13 +146,13 @@ const MembersPage: React.FC = () => {
   };
 
   const submitSearch = async () => {
-    await loadUsers(filters);
+    await loadUsers(filters, 1, listPagination.pageSize);
   };
 
   const resetSearch = async () => {
     const nextFilters: MemberFilters = {};
     setFilters(nextFilters);
-    await loadUsers(nextFilters);
+    await loadUsers(nextFilters, 1, MEMBER_LIST_DEFAULT_PAGE_SIZE);
   };
 
   const updateUserRole = async (user: AdminUserItem, role: 'user' | 'admin') => {
@@ -142,7 +161,7 @@ const MembersPage: React.FC = () => {
       data: { role }
     });
     messageApi.success('角色已更新');
-    await loadUsers();
+    await loadUsers(filters, listPagination.current, listPagination.pageSize);
   };
 
   const openMemberAdjust = (user: AdminUserItem) => {
@@ -165,7 +184,7 @@ const MembersPage: React.FC = () => {
     });
     messageApi.success('会员状态已更新');
     setSelectedUser(null);
-    await loadUsers();
+    await loadUsers(filters, listPagination.current, listPagination.pageSize);
   };
 
   const openPlanCreate = () => {
@@ -220,6 +239,7 @@ const MembersPage: React.FC = () => {
   };
 
   const columns: ColumnsType<AdminUserItem> = [
+    serialColumn<AdminUserItem>(listPagination.current, listPagination.pageSize),
     {
       title: '用户',
       dataIndex: 'nickname',
@@ -272,6 +292,7 @@ const MembersPage: React.FC = () => {
   ];
 
   const planColumns: ColumnsType<MemberPlanItem> = [
+    serialColumn<MemberPlanItem>(),
     {
       title: '套餐名称',
       dataIndex: 'name'
@@ -358,8 +379,8 @@ const MembersPage: React.FC = () => {
             <Button type="primary" onClick={submitSearch}>
               查询
             </Button>
-            <Button onClick={resetSearch}>重置</Button>
-            <Button onClick={() => loadUsers(filters)}>刷新会员</Button>
+            <Button onClick={() => resetSearch()}>重置</Button>
+            <Button onClick={() => loadUsers(filters, listPagination.current, listPagination.pageSize)}>刷新会员</Button>
             <Button
               onClick={async () => {
                 await loadPlans();
@@ -376,7 +397,15 @@ const MembersPage: React.FC = () => {
           columns={columns}
           dataSource={users}
           loading={loading}
-          pagination={false}
+          pagination={{
+            current: listPagination.current,
+            pageSize: listPagination.pageSize,
+            total: listPagination.total,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100'],
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (page, pageSize) => void loadUsers(filters, page, pageSize)
+          }}
           scroll={{ x: 920 }}
         />
       </main>

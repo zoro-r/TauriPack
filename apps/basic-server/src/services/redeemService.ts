@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import ExcelJS from 'exceljs';
 import RedeemBatchModel, { type RedeemBatchStatus } from '@/models/RedeemBatch';
 import RedeemCodeModel from '@/models/RedeemCode';
 import RedeemRecordModel from '@/models/RedeemRecord';
@@ -30,6 +31,7 @@ export interface RedeemCodeListQuery {
   batchId?: string;
   grantType?: 'member' | 'app';
 }
+
 
 export interface RedeemPreviewResult {
   code: string;
@@ -205,7 +207,9 @@ export const generateRedeemCodes = async (batchId: string, count: number) => {
   return created;
 };
 
-export const listRedeemCodes = async (query: RedeemCodeListQuery = {}) => {
+const REDEEM_CODES_EXPORT_MAX_ROWS = 25_000;
+
+export const buildRedeemCodesFilter = async (query: RedeemCodeListQuery = {}) => {
   const keyword = query.keyword?.trim();
   const filter: Record<string, unknown> = {};
 
@@ -228,11 +232,121 @@ export const listRedeemCodes = async (query: RedeemCodeListQuery = {}) => {
     }
   }
 
-  return RedeemCodeModel.find(filter)
+  return filter;
+};
+
+export const listRedeemCodes = async (query: RedeemCodeListQuery & { page?: string | number; pageSize?: string | number } = {}) => {
+  const filter = await buildRedeemCodesFilter(query);
+
+  let page = Math.max(1, Math.floor(Number(query.page)) || 1);
+  let pageSize = Math.floor(Number(query.pageSize)) || 20;
+  pageSize = Math.min(100, Math.max(5, pageSize));
+
+  const total = await RedeemCodeModel.countDocuments(filter);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  page = Math.min(page, totalPages);
+
+  const list = await RedeemCodeModel.find(filter)
     .populate('batchId', 'name status userVisibleTitle expiresAt grantType')
     .populate('usedBy', 'nickname wechatOpenId')
     .sort({ createdAt: -1 })
+    .skip((page - 1) * pageSize)
+    .limit(pageSize)
     .lean();
+
+  return { list, total, page, pageSize };
+};
+
+const redeemCodeStatusLabel = (status: string) => {
+  if (status === 'used') return '已使用';
+  if (status === 'expired') return '已过期';
+  if (status === 'disabled') return '已停用';
+  return '未使用';
+};
+
+/** 将单条 Mongoose lean 兑换码转成 Excel 列对象 */
+const redeemCodeRowToExportFields = (row: any) => {
+  const batch = typeof row.batchId === 'object' && row.batchId ? row.batchId : null;
+  const user = typeof row.usedBy === 'object' && row.usedBy ? row.usedBy : null;
+  const grantLabel = batch?.grantType === 'app' ? '单应用' : '会员';
+
+  const usedAt =
+    row.usedAt instanceof Date
+      ? row.usedAt.toISOString().replace('T', ' ').slice(0, 19)
+      : row.usedAt
+        ? String(row.usedAt)
+        : '';
+
+  let expiresAt = '';
+  if (row.expiresAt instanceof Date) {
+    expiresAt = row.expiresAt.toISOString().replace('T', ' ').slice(0, 19);
+  } else if (row.expiresAt) {
+    expiresAt = String(row.expiresAt);
+  }
+
+  const batchName =
+    typeof batch?.name === 'string' && batch.name
+      ? batch.name
+      : typeof batch?.userVisibleTitle === 'string' && batch.userVisibleTitle
+        ? batch.userVisibleTitle
+        : '';
+
+  return {
+    code: row.code ?? '',
+    statusLabel: redeemCodeStatusLabel(String(row.status || '')),
+    batchName,
+    grantLabel,
+    nickname: user?.nickname || '',
+    openId: user?.wechatOpenId || '',
+    usedAt,
+    expiresAt
+  };
+};
+
+export const buildRedeemCodesExportXlsx = async (query: RedeemCodeListQuery = {}) => {
+  const filter = await buildRedeemCodesFilter(query);
+  const total = await RedeemCodeModel.countDocuments(filter);
+  const rows = await RedeemCodeModel.find(filter)
+    .populate('batchId', 'name status userVisibleTitle expiresAt grantType')
+    .populate('usedBy', 'nickname wechatOpenId')
+    .sort({ createdAt: -1 })
+    .limit(REDEEM_CODES_EXPORT_MAX_ROWS)
+    .lean();
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet('兑换码', {
+    views: [{ state: 'frozen', ySplit: 1 }]
+  });
+
+  sheet.columns = [
+    { header: '兑换码', key: 'code', width: 28 },
+    { header: '状态', key: 'statusLabel', width: 12 },
+    { header: '所属活动', key: 'batchName', width: 28 },
+    { header: '权益类型', key: 'grantLabel', width: 12 },
+    { header: '使用人', key: 'nickname', width: 16 },
+    { header: '用户标识', key: 'openId', width: 32 },
+    { header: '使用时间', key: 'usedAt', width: 22 },
+    { header: '过期时间', key: 'expiresAt', width: 22 }
+  ];
+
+  const headerRow = sheet.getRow(1);
+  headerRow.font = { bold: true };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'left' };
+
+  for (const row of rows) {
+    sheet.addRow(redeemCodeRowToExportFields(row));
+  }
+
+  const rawBuf = await workbook.xlsx.writeBuffer();
+
+  return {
+    buffer: Buffer.from(rawBuf),
+    rowCount: rows.length,
+    totalMatching: total,
+    truncated: total > rows.length
+  };
 };
 
 const normalizeMemberAccount = async (userId: string) => {

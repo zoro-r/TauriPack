@@ -3,6 +3,8 @@ import MemberPlanModel from '@/models/MemberPlan';
 import MemberOrderModel from '@/models/MemberOrder';
 import MemberAccountModel from '@/models/MemberAccount';
 import MemberBenefitLogModel from '@/models/MemberBenefitLog';
+import AppItemModel from '@/models/AppItem';
+import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategoryService';
 import { createNativeWechatPayOrder, queryWechatPayOrder } from '@/services/wechatPayService';
 
 export interface MemberPlanInput {
@@ -64,6 +66,18 @@ const normalizeMemberAccount = async (userId: string) => {
     await account.save();
   }
   return account;
+};
+
+/** 会员上架应用等场景使用的「当前是否在有效期内」判断（与列表访问逻辑一致） */
+export const isMemberActive = async (userId: string) => {
+  const account = await normalizeMemberAccount(userId);
+  if (!account?.isMember || account.status !== 'active') {
+    return false;
+  }
+  if (account.expiredAt && account.expiredAt.getTime() < Date.now()) {
+    return false;
+  }
+  return true;
 };
 
 const grantMemberBenefit = async (orderId: string) => {
@@ -245,13 +259,19 @@ export const getMemberMe = async (userId: string) => {
     .sort({ createdAt: -1 })
     .lean();
 
+  const memberUploadCategoryId = await ensureMemberUploadCategoryId();
+
+  const ownedAppCount = await AppItemModel.countDocuments({ ownerUserId: userId });
+
   return {
     isMember: Boolean(account?.isMember && account?.status === 'active'),
     memberLevel: account?.memberLevel || 'basic',
     status: account?.status || 'expired',
     startedAt: account?.startedAt,
     expiredAt: account?.expiredAt,
-    latestOrder
+    latestOrder,
+    memberUploadCategoryId,
+    ownedAppCount
   };
 };
 

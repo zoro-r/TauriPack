@@ -14,7 +14,10 @@ export interface AppItemDocument extends Document {
   name: string;
   slug: string;
   categoryId: mongoose.Types.ObjectId;
-  accessLevel: 'login' | 'member' | 'explicit';
+  /** 会员自助上架时写入；管理员创建的可为空 */
+  ownerUserId?: mongoose.Types.ObjectId;
+  /** owner：仅 ownerUserId 对应用户与管理员可见（会员自助上架默认） */
+  accessLevel: 'login' | 'member' | 'explicit' | 'owner';
   summary?: string;
   description?: string;
   cover?: string;
@@ -44,10 +47,11 @@ const appItemSchema = new Schema<AppItemDocument>(
   {
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, index: true, trim: true },
+    ownerUserId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     categoryId: { type: Schema.Types.ObjectId, ref: 'AppCategory', required: true, index: true },
     accessLevel: {
       type: String,
-      enum: ['login', 'member', 'explicit'],
+      enum: ['login', 'member', 'explicit', 'owner'],
       default: 'login',
       index: true
     },

@@ -3,8 +3,10 @@ import { Avatar, Button, Dropdown, Form, Input, MenuProps, Modal, Space, Table, 
 import type { ColumnsType } from 'antd/es/table';
 import { Outlet, history, useLocation } from '@umijs/max';
 import request from '../utils/request';
+import { serialColumn } from '../utils/tableColumns';
 import {
   clearAuthStorage,
+  catalogAccountKindLabelOf,
   formatDateTime,
   getCurrentUserFromStorage,
   nameInitial,
@@ -446,79 +448,81 @@ const RootLayout: React.FC = () => {
     <>
       {contextHolder}
       <div className="catalog-page">
-        <div className="catalog-page__hero">
-          <div className="catalog-page__hero-left">
-            <div className="catalog-brand">
-              <img
-                className="catalog-brand__logo-image"
-                src="https://yun.cbysaas.com/yzd_kp/uniacid1/u0/img/2026/4/15/1776242248057637290.png"
-                alt="应用管理台"
-              />
-            </div>
-            <nav className="catalog-topnav" aria-label="主导航">
-              {menus.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  className={`catalog-topnav__item ${location.pathname === (item.path || '/') ? 'is-active' : ''}`}
-                  onClick={() => history.push(item.path || '/')}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </nav>
-          </div>
-          <div className="catalog-page__hero-right">
-            <div className="catalog-user-panel">
-              <Avatar size={42} src={currentUser?.avatar} className="catalog-user-panel__avatar">
-                {nameInitial(currentUser?.nickname)}
-              </Avatar>
-              <div className="catalog-user-panel__meta">
-                <div className="catalog-user-panel__name">
-                  {currentUser?.nickname || '游客访问'}
-                </div>
-                <div className="catalog-user-panel__sub">
-                  {currentUser?.role === 'admin' ? '管理员' : currentUser ? '普通用户' : '未登录'}
-                </div>
+        <div className="catalog-page__inner">
+          <div className="catalog-page__hero">
+            <div className="catalog-page__hero-left">
+              <div className="catalog-brand">
+                <img
+                  className="catalog-brand__logo-image"
+                  src="https://yun.cbysaas.com/yzd_kp/uniacid1/u0/img/2026/4/15/1776242248057637290.png"
+                  alt="应用管理台"
+                />
               </div>
-              {currentUser ? (
-                <Space.Compact>
-                  <Button onClick={openMemberCenter}>
-                    {memberInfo?.isMember ? '会员' : '开通会员'}
-                  </Button>
-                  <Dropdown
-                    menu={{
-                      items: userMenuItems,
-                      onClick: ({ key }) => {
-                        if (key === 'orders') {
-                          openUserOrders().catch(() => undefined);
-                          return;
-                        }
-                        if (key === 'redeem') {
-                          openRedeemCenter();
-                          return;
-                        }
-                        if (key === 'member') {
-                          openMemberCenter();
-                          return;
-                        }
-                        if (key === 'logout') {
-                          handleLogout();
-                        }
-                      }
-                    }}
-                    trigger={['click']}
+              <nav className="catalog-topnav" aria-label="主导航">
+                {menus.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className={`catalog-topnav__item ${location.pathname === (item.path || '/') ? 'is-active' : ''}`}
+                    onClick={() => history.push(item.path || '/')}
                   >
-                    <Button>个人中心</Button>
-                  </Dropdown>
-                </Space.Compact>
-              ) : (
-                <Button onClick={handleLoginEntry}>登录</Button>
-              )}
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+            </div>
+            <div className="catalog-page__hero-right">
+              <div className="catalog-user-panel">
+                <Avatar size={42} src={currentUser?.avatar} className="catalog-user-panel__avatar">
+                  {nameInitial(currentUser?.nickname)}
+                </Avatar>
+                <div className="catalog-user-panel__meta">
+                  <div className="catalog-user-panel__name">
+                    {currentUser?.nickname || '游客访问'}
+                  </div>
+                  <div className="catalog-user-panel__sub">
+                    {catalogAccountKindLabelOf(currentUser, memberInfo)}
+                  </div>
+                </div>
+                {currentUser ? (
+                  <Space.Compact>
+                    <Button onClick={openMemberCenter}>
+                      {memberInfo?.isMember ? '会员' : '开通会员'}
+                    </Button>
+                    <Dropdown
+                      menu={{
+                        items: userMenuItems,
+                        onClick: ({ key }) => {
+                          if (key === 'orders') {
+                            openUserOrders().catch(() => undefined);
+                            return;
+                          }
+                          if (key === 'redeem') {
+                            openRedeemCenter();
+                            return;
+                          }
+                          if (key === 'member') {
+                            openMemberCenter();
+                            return;
+                          }
+                          if (key === 'logout') {
+                            handleLogout();
+                          }
+                        }
+                      }}
+                      trigger={['click']}
+                    >
+                      <Button>个人中心</Button>
+                    </Dropdown>
+                  </Space.Compact>
+                ) : (
+                  <Button onClick={handleLoginEntry}>登录</Button>
+                )}
+              </div>
             </div>
           </div>
+          <Outlet />
         </div>
-        <Outlet />
       </div>
 
       <Modal
@@ -575,6 +579,7 @@ const RootLayout: React.FC = () => {
           scroll={{ x: 860 }}
           columns={
             [
+              serialColumn<UserOrderItem>(),
               {
                 title: '订单号',
                 dataIndex: 'orderNo'
@@ -772,8 +777,12 @@ const RootLayout: React.FC = () => {
                   : '选择套餐后使用微信扫码支付，支付成功自动到账'}
               </div>
             </div>
-            <div className={`member-panel__badge ${memberInfo?.isMember ? 'is-active' : ''}`}>
-              {memberInfo?.isMember ? 'VIP' : '普通用户'}
+            <div
+              className={`member-panel__badge ${
+                memberInfo?.isMember || currentUser?.role === 'admin' ? 'is-active' : ''
+              }`}
+            >
+              {catalogAccountKindLabelOf(currentUser, memberInfo)}
             </div>
           </div>
 

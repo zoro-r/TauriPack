@@ -46,6 +46,10 @@ export const listAdminUsers = async (query: AdminListQuery) => {
   if (query.role) {
     userFilter.role = query.role;
   }
+  if (query.memberStatus) {
+    const memberUserIds = await MemberAccountModel.find({ status: query.memberStatus }).distinct('userId');
+    userFilter._id = { $in: memberUserIds };
+  }
 
   const users = await UserModel.find(userFilter)
     .sort({ createdAt: -1 })
@@ -57,18 +61,16 @@ export const listAdminUsers = async (query: AdminListQuery) => {
   const accounts = await MemberAccountModel.find({ userId: { $in: userIds } }).lean();
   const accountMap = new Map(accounts.map((account) => [String(account.userId), account]));
 
-  const items = users
-    .map((user) => ({
-      id: user._id.toString(),
-      nickname: user.nickname,
-      avatar: user.avatar,
-      wechatOpenId: user.wechatOpenId,
-      role: user.role || 'user',
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
-      member: accountMap.get(user._id.toString()) || null
-    }))
-    .filter((user) => (query.memberStatus ? user.member?.status === query.memberStatus : true));
+  const items = users.map((user) => ({
+    id: user._id.toString(),
+    nickname: user.nickname,
+    avatar: user.avatar,
+    wechatOpenId: user.wechatOpenId,
+    role: user.role || 'user',
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    member: accountMap.get(user._id.toString()) || null
+  }));
 
   return { items, total, page, pageSize };
 };

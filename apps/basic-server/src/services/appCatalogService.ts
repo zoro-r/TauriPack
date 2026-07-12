@@ -3,8 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import AppCategoryModel from '@/models/AppCategory';
 import AppItemModel from '@/models/AppItem';
-import MemberAccountModel from '@/models/MemberAccount';
 import UserAppEntitlementModel from '@/models/UserAppEntitlement';
+import { isMemberActive } from '@/services/memberService';
+import { MEMBER_UPLOAD_CATEGORY_SLUG } from '@/services/memberUploadCategoryService';
+
+/** 会员自助上架数量上限（写死；后续可改为配额表） */
+export const MEMBER_MAX_OWN_APPS = 1;
 
 export interface CategoryInput {
   name: string;
@@ -26,7 +30,7 @@ export interface AppMediaInput {
 export interface AppItemInput {
   name: string;
   categoryId: string;
-  accessLevel?: 'login' | 'member' | 'explicit';
+  accessLevel?: 'login' | 'member' | 'explicit' | 'owner';
   summary?: string;
   description?: string;
   cover?: string;
@@ -42,6 +46,8 @@ export interface AppItemInput {
 export interface AppListQuery {
   categoryId?: string;
   keyword?: string;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface AppListViewer {
@@ -224,7 +230,30 @@ export const deleteCategory = async (id: string) => {
   return { id };
 };
 
-export const listApps = async (query: AppListQuery, viewer?: AppListViewer) => {
+const DEFAULT_APP_LIST_PAGE_SIZE = 12;
+const MAX_APP_PAGE_SIZE_NON_ADMIN = 100;
+const MAX_APP_PAGE_SIZE_ADMIN = 500;
+
+const normalizeAppListPaging = (
+  rawPage?: number,
+  rawPageSize?: number,
+  isAdminViewer?: boolean
+): { page: number; pageSize: number } => {
+  let page =
+    typeof rawPage === 'number' && Number.isFinite(rawPage) ? Math.floor(rawPage) : 1;
+  page = Math.max(1, page);
+
+  let pageSize =
+    typeof rawPageSize === 'number' && Number.isFinite(rawPageSize)
+      ? Math.floor(rawPageSize)
+      : DEFAULT_APP_LIST_PAGE_SIZE;
+
+  const cap = isAdminViewer ? MAX_APP_PAGE_SIZE_ADMIN : MAX_APP_PAGE_SIZE_NON_ADMIN;
+  pageSize = Math.min(Math.max(pageSize, 1), cap);
+  return { page, pageSize };
+};
+
+export const buildAppListFilter = async (query: AppListQuery, viewer?: AppListViewer) => {
   const filter: Record<string, unknown> = {};
 
   if (query.categoryId) {
@@ -254,33 +283,121 @@ export const listApps = async (query: AppListQuery, viewer?: AppListViewer) => {
         .lean();
       const entitlementAppIds = entitlementItems.map((item) => item.appId);
 
-      filter.$and = [
-        {
-          $or: [
-            { accessLevel: 'login' },
-            { accessLevel: 'member' },
-            ...(entitlementAppIds.length ? [{ _id: { $in: entitlementAppIds } }] : [])
-          ]
-        }
+      const visibilityOr: Record<string, unknown>[] = [
+        { accessLevel: 'login' },
+        { accessLevel: 'member' },
+        ...(entitlementAppIds.length ? [{ _id: { $in: entitlementAppIds } }] : [])
       ];
+      if (viewer.userId) {
+        visibilityOr.push({ ownerUserId: viewer.userId });
+      }
+
+      const visibilityClause = { $or: visibilityOr };
+      const andConditions: Record<string, unknown>[] = [visibilityClause];
+
+      /** 「我的应用」分类：仅本人可见本人上架项；他人上架的同分类应用一律不可见（管理员除外已在分支外） */
+      const memberUploadCat = await AppCategoryModel.findOne({ slug: MEMBER_UPLOAD_CATEGORY_SLUG })
+        .select('_id')
+        .lean();
+      if (memberUploadCat?._id) {
+        const myAppsOid = memberUploadCat._id;
+        const viewerOid = new mongoose.Types.ObjectId(viewer.userId);
+        andConditions.push({
+          $or: [
+            { categoryId: { $ne: myAppsOid } },
+            { ownerUserId: viewerOid },
+            {
+              $and: [
+                { categoryId: myAppsOid },
+                {
+                  $or: [{ ownerUserId: { $exists: false } }, { ownerUserId: null }]
+                }
+              ]
+            }
+          ]
+        });
+      }
+
+      filter.$and = andConditions;
     }
   }
 
-  return AppItemModel.find(filter)
-    .populate('categoryId', 'name slug icon sort isActive')
-    .sort({ createdAt: -1 })
-    .lean();
+  return filter;
 };
 
-const isMemberActive = async (userId: string) => {
-  const account = await MemberAccountModel.findOne({ userId }).lean();
-  if (!account?.isMember || account.status !== 'active') {
-    return false;
+export const listAppsPaged = async (query: AppListQuery, viewer?: AppListViewer) => {
+  const { page, pageSize } = normalizeAppListPaging(
+    query.page,
+    query.pageSize,
+    viewer?.role === 'admin'
+  );
+  const filter = await buildAppListFilter(query, viewer);
+  const skip = (page - 1) * pageSize;
+
+  const [list, total] = await Promise.all([
+    AppItemModel.find(filter)
+      .populate('categoryId', 'name slug icon sort isActive')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(pageSize)
+      .lean(),
+    AppItemModel.countDocuments(filter)
+  ]);
+
+  return { list, total, page, pageSize };
+};
+
+export const countAppsOwnedByUser = async (userId: string) =>
+  AppItemModel.countDocuments({ ownerUserId: userId });
+
+/** 会员上传 zip：新建时校验名额；指定 appId 时校验归属 */
+export const authorizeMemberPackageUpload = async (params: {
+  userId: string;
+  role: 'admin' | 'user';
+  appId?: string;
+}) => {
+  if (params.role === 'admin') {
+    return;
   }
-  if (account.expiredAt && account.expiredAt.getTime() < Date.now()) {
-    return false;
+  if (!(await isMemberActive(params.userId))) {
+    throw new Error('需要有效会员身份');
   }
-  return true;
+  if (params.appId) {
+    ensureObjectId(params.appId, 'appId');
+    const app = await AppItemModel.findById(params.appId).lean();
+    if (!app) {
+      throw new Error('app not found');
+    }
+    if (app.ownerUserId?.toString() !== params.userId) {
+      throw new Error('无权操作该应用');
+    }
+    return;
+  }
+  const owned = await countAppsOwnedByUser(params.userId);
+  if (owned >= MEMBER_MAX_OWN_APPS) {
+    throw new Error(`会员最多上架 ${MEMBER_MAX_OWN_APPS} 个应用`);
+  }
+};
+
+export const assertMemberOwnsAppOrAdmin = async (
+  userId: string,
+  role: 'admin' | 'user',
+  appId: string
+) => {
+  if (role === 'admin') {
+    return;
+  }
+  if (!(await isMemberActive(userId))) {
+    throw new Error('需要有效会员身份');
+  }
+  ensureObjectId(appId, 'appId');
+  const app = await AppItemModel.findById(appId).lean();
+  if (!app) {
+    throw new Error('app not found');
+  }
+  if (app.ownerUserId?.toString() !== userId) {
+    throw new Error('无权操作该应用');
+  }
 };
 
 export const canUserPreviewAppDetail = async (userId: string, appId: string) => {
@@ -298,6 +415,10 @@ export const canUserPreviewAppDetail = async (userId: string, appId: string) => 
     }).lean();
     return { allowed: Boolean(entitlement), reason: entitlement ? 'entitlement' : 'explicit_required', app };
   }
+  if (app.accessLevel === 'owner') {
+    const ok = app.ownerUserId?.toString() === userId;
+    return { allowed: ok, reason: ok ? 'login' : 'owner_required', app };
+  }
   if (app.accessLevel === 'member') {
     const isMember = await isMemberActive(userId);
     return { allowed: isMember, reason: isMember ? 'member' : 'member_required', app };
@@ -313,6 +434,14 @@ export const canUserAccessApp = async (userId: string, appId: string) => {
   }
   if (app.accessLevel === 'login') {
     return { allowed: true, reason: 'login', app };
+  }
+  if (app.accessLevel === 'owner') {
+    const ok = app.ownerUserId?.toString() === userId;
+    return {
+      allowed: ok,
+      reason: ok ? 'login' : 'owner_required',
+      app
+    };
   }
 
   const entitlement = await UserAppEntitlementModel.findOne({
@@ -347,16 +476,41 @@ export const getAppDetail = async (id: string) => {
   return app;
 };
 
-export const createApp = async (input: AppItemInput) => {
+/** 按访问级别校验详情可见性（owner 级别需登录且为本人或管理员） */
+export const getAppDetailForViewer = async (
+  id: string,
+  viewer?: { userId: string; role: 'admin' | 'user' }
+) => {
+  const app = await getAppDetail(id);
+  if (viewer?.role === 'admin') {
+    return app;
+  }
+  if (app.accessLevel === 'owner') {
+    if (!viewer?.userId || app.ownerUserId?.toString() !== viewer.userId) {
+      throw new Error(viewer?.userId ? '无权查看：该应用已设为「仅自己可见」' : '请先登录');
+    }
+  }
+  return app;
+};
+
+export const createApp = async (input: AppItemInput, ownerUserId?: string | null) => {
   validateAppInput(input);
-  const payload = mapAppPayloadForCreate(input);
-  const slug = normalizeText(input.slug) || (await buildUniqueAppSlug(payload.name));
-  await ensureCategoryExists(payload.categoryId);
+  const basePayload = mapAppPayloadForCreate(input);
+  const slug = normalizeText(input.slug) || (await buildUniqueAppSlug(basePayload.name));
+  await ensureCategoryExists(basePayload.categoryId);
   const existing = await AppItemModel.findOne({ slug }).lean();
   if (existing) {
     throw new Error('app slug already exists');
   }
-  return AppItemModel.create({ ...payload, slug });
+  const payload = ownerUserId ? { ...basePayload, accessLevel: 'owner' as const } : basePayload;
+  if (ownerUserId) {
+    ensureObjectId(ownerUserId, 'ownerUserId');
+  }
+  return AppItemModel.create({
+    ...payload,
+    slug,
+    ...(ownerUserId ? { ownerUserId } : {})
+  });
 };
 
 export const updateApp = async (id: string, input: AppItemInput) => {

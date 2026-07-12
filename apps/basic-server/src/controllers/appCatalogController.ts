@@ -1,13 +1,17 @@
 import type Router from '@koa/router';
 import {
+  assertMemberOwnsAppOrAdmin,
+  authorizeMemberPackageUpload,
   canUserAccessApp,
+  countAppsOwnedByUser,
   createApp,
   createCategory,
   deleteApp,
   deleteCategory,
-  getAppDetail,
-  listApps,
+  getAppDetailForViewer,
+  listAppsPaged,
   listCategories,
+  MEMBER_MAX_OWN_APPS,
   updateApp,
   updateCategory,
   type AppItemInput,
@@ -22,7 +26,10 @@ import {
 } from '@/services/appCatalogMediaService';
 import { type UploadedPackageFile, uploadAppPackage } from '@/services/appPackageService';
 import { getBearerToken, requireAdmin, requireUser } from '@/middleware/auth';
+import UserModel from '@/models/User';
 import { verifyAccessToken } from '@/services/authService';
+import { isMemberActive } from '@/services/memberService';
+import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategoryService';
 import { error as errorResponse, success } from '@/utils/tool';
 
 export const getCategoryList = async (ctx: Router.RouterContext) => {
@@ -64,7 +71,7 @@ export const removeCategory = async (ctx: Router.RouterContext) => {
 
 export const getAppList = async (ctx: Router.RouterContext) => {
   try {
-    const query = ctx.query as unknown as AppListQuery;
+    const query = ctx.query as unknown as AppListQuery & { page?: string; pageSize?: string };
     const token = getBearerToken(ctx);
     let viewer:
       | {
@@ -83,11 +90,20 @@ export const getAppList = async (ctx: Router.RouterContext) => {
       }
     }
 
+    const pageParsed = query.page !== undefined ? Number(query.page) : undefined;
+    const pageSizeParsed = query.pageSize !== undefined ? Number(query.pageSize) : undefined;
+
     ctx.body = success(
-      await listApps({
-        categoryId: query.categoryId,
-        keyword: query.keyword
-      }, viewer)
+      await listAppsPaged(
+        {
+          categoryId: query.categoryId,
+          keyword: query.keyword,
+          page: pageParsed !== undefined && Number.isFinite(pageParsed) ? pageParsed : undefined,
+          pageSize:
+            pageSizeParsed !== undefined && Number.isFinite(pageSizeParsed) ? pageSizeParsed : undefined
+        },
+        viewer
+      )
     );
   } catch (err) {
     ctx.body = errorResponse('get apps failed', err);
@@ -96,7 +112,21 @@ export const getAppList = async (ctx: Router.RouterContext) => {
 
 export const getAppById = async (ctx: Router.RouterContext) => {
   try {
-    ctx.body = success(await getAppDetail(String(ctx.params.id || '')));
+    const id = String(ctx.params.id || '');
+    const token = getBearerToken(ctx);
+    let viewer: { userId: string; role: 'admin' | 'user' } | undefined;
+    if (token) {
+      try {
+        const payload = await verifyAccessToken(token);
+        const user = await UserModel.findById(payload.sub).lean();
+        if (user) {
+          viewer = { userId: user._id.toString(), role: user.role };
+        }
+      } catch {
+        viewer = undefined;
+      }
+    }
+    ctx.body = success(await getAppDetailForViewer(id, viewer));
   } catch (err) {
     ctx.body = errorResponse('get app failed', err);
   }
@@ -113,9 +143,24 @@ export const getAppAccess = async (ctx: Router.RouterContext) => {
 
 export const postApp = async (ctx: Router.RouterContext) => {
   try {
-    await requireAdmin(ctx);
+    const user = await requireUser(ctx);
     const body = (ctx.request.body || {}) as AppItemInput;
-    ctx.body = success(await createApp(body), 'app created');
+    if (user.role === 'admin') {
+      ctx.body = success(await createApp(body), 'app created');
+      return;
+    }
+    if (!(await isMemberActive(user._id.toString()))) {
+      throw new Error('需要有效会员身份');
+    }
+    const owned = await countAppsOwnedByUser(user._id.toString());
+    if (owned >= MEMBER_MAX_OWN_APPS) {
+      throw new Error(`会员最多上架 ${MEMBER_MAX_OWN_APPS} 个应用`);
+    }
+    const categoryId = await ensureMemberUploadCategoryId();
+    ctx.body = success(
+      await createApp({ ...body, categoryId }, user._id.toString()),
+      'app created'
+    );
   } catch (err) {
     ctx.body = errorResponse('create app failed', err);
   }
@@ -123,14 +168,20 @@ export const postApp = async (ctx: Router.RouterContext) => {
 
 export const postAppPackage = async (ctx: Router.RouterContext) => {
   try {
-    await requireAdmin(ctx);
+    const user = await requireUser(ctx);
     const file = ctx.file as UploadedPackageFile | undefined;
     const body = (ctx.request.body || {}) as { appName?: string; appId?: string };
+    const appId = body.appId ? String(body.appId) : undefined;
+    await authorizeMemberPackageUpload({
+      userId: user._id.toString(),
+      role: user.role,
+      appId
+    });
     ctx.body = success(
       await uploadAppPackage({
         file: file as UploadedPackageFile,
         appName: String(body.appName || ''),
-        appId: body.appId ? String(body.appId) : undefined
+        appId
       }),
       'app package uploaded'
     );
@@ -141,7 +192,10 @@ export const postAppPackage = async (ctx: Router.RouterContext) => {
 
 export const postAppCover = async (ctx: Router.RouterContext) => {
   try {
-    await requireAdmin(ctx);
+    const user = await requireUser(ctx);
+    if (user.role !== 'admin' && !(await isMemberActive(user._id.toString()))) {
+      throw new Error('需要有效会员身份');
+    }
     const file = ctx.file as UploadedCoverFile | undefined;
     ctx.body = success(await uploadAppCover(file), 'app cover uploaded');
   } catch (err) {
@@ -151,7 +205,10 @@ export const postAppCover = async (ctx: Router.RouterContext) => {
 
 export const postAppCatalogMedia = async (ctx: Router.RouterContext) => {
   try {
-    await requireAdmin(ctx);
+    const user = await requireUser(ctx);
+    if (user.role !== 'admin' && !(await isMemberActive(user._id.toString()))) {
+      throw new Error('需要有效会员身份');
+    }
     const file = ctx.file as UploadedCatalogMediaFile | undefined;
     const body = (ctx.request.body || {}) as { fileType?: string };
     const kind = normalizeCatalogMediaKind(body.fileType);
@@ -163,9 +220,15 @@ export const postAppCatalogMedia = async (ctx: Router.RouterContext) => {
 
 export const putApp = async (ctx: Router.RouterContext) => {
   try {
-    await requireAdmin(ctx);
+    const user = await requireUser(ctx);
+    const id = String(ctx.params.id || '');
+    await assertMemberOwnsAppOrAdmin(user._id.toString(), user.role, id);
     const body = (ctx.request.body || {}) as AppItemInput;
-    ctx.body = success(await updateApp(String(ctx.params.id || ''), body), 'app updated');
+    if (user.role !== 'admin') {
+      body.accessLevel = 'owner';
+      body.categoryId = await ensureMemberUploadCategoryId();
+    }
+    ctx.body = success(await updateApp(id, body), 'app updated');
   } catch (err) {
     ctx.body = errorResponse('update app failed', err);
   }
@@ -173,8 +236,10 @@ export const putApp = async (ctx: Router.RouterContext) => {
 
 export const removeApp = async (ctx: Router.RouterContext) => {
   try {
-    await requireAdmin(ctx);
-    ctx.body = success(await deleteApp(String(ctx.params.id || '')), 'app deleted');
+    const user = await requireUser(ctx);
+    const id = String(ctx.params.id || '');
+    await assertMemberOwnsAppOrAdmin(user._id.toString(), user.role, id);
+    ctx.body = success(await deleteApp(id), 'app deleted');
   } catch (err) {
     ctx.body = errorResponse('delete app failed', err);
   }

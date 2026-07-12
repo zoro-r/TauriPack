@@ -8,11 +8,13 @@ import {
   Input,
   InputNumber,
   Modal,
+  Pagination,
   Popconfirm,
   Select,
   Space,
   Spin,
   Switch,
+  Tooltip,
   Typography,
   Upload,
   message
@@ -20,6 +22,7 @@ import {
 import type { UploadFile } from 'antd/es/upload/interface';
 import request from '../utils/request';
 import {
+  catalogAccountKindLabelOf,
   clearAuthStorage,
   formatDateTime,
   getCurrentUserFromStorage,
@@ -52,7 +55,9 @@ interface AppItem {
   _id: string;
   name: string;
   slug: string;
-  accessLevel: 'login' | 'member' | 'explicit';
+  /** 会员上架时后端写入 */
+  ownerUserId?: string;
+  accessLevel: 'login' | 'member' | 'explicit' | 'owner';
   summary?: string;
   description?: string;
   cover?: string;
@@ -83,7 +88,7 @@ interface CategoryFormValues {
 interface AppFormValues {
   name: string;
   categoryId: string;
-  accessLevel: 'login' | 'member' | 'explicit';
+  accessLevel: 'login' | 'member' | 'explicit' | 'owner';
   summary?: string;
   description?: string;
   cover?: string;
@@ -133,6 +138,10 @@ interface MemberInfo {
   status: 'active' | 'expired';
   startedAt?: string;
   expiredAt?: string;
+  /** 会员上架默认分类「我的应用」对应 ID */
+  memberUploadCategoryId?: string;
+  /** 当前用户已上架应用数（与分页无关，用于上传额度判断） */
+  ownedAppCount?: number;
 }
 
 interface MemberOrderPayload {
@@ -146,11 +155,40 @@ interface MemberOrderPayload {
 
 interface AppAccessPayload {
   allowed: boolean;
-  reason: 'login' | 'entitlement' | 'member' | 'explicit_required' | 'member_required';
+  reason:
+    | 'login'
+    | 'entitlement'
+    | 'member'
+    | 'explicit_required'
+    | 'member_required'
+    | 'owner_required';
 }
 
-const categoryNameOf = (categoryId: AppItem['categoryId']) =>
-  typeof categoryId === 'string' ? '' : categoryId?.name || '';
+interface AppsPagedResponse {
+  list: AppItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/** 与后端 `memberUploadCategoryService` 中 slug 一致 */
+const MEMBER_UPLOAD_CATEGORY_SLUG = 'my-apps';
+
+/** 列表/详情展示用：管理员视角下会员默认分类显示为「会员应用」 */
+const categoryLabelForViewer = (categoryId: AppItem['categoryId'], viewerIsAdmin: boolean) => {
+  if (typeof categoryId === 'string') {
+    return '';
+  }
+  const name = categoryId?.name || '';
+  const slug = categoryId?.slug;
+  if (viewerIsAdmin && slug === MEMBER_UPLOAD_CATEGORY_SLUG) {
+    return '会员应用';
+  }
+  return name;
+};
+
+const sidebarCategoryLabel = (category: AppCategory, viewerIsAdmin: boolean) =>
+  viewerIsAdmin && category.slug === MEMBER_UPLOAD_CATEGORY_SLUG ? '会员应用' : category.name;
 
 /** 后端按 sort 存；列表展示前再兜底排一次序 */
 const sortAppMediaItems = (media?: AppMediaItem[]) =>
@@ -193,6 +231,32 @@ const resolveAppAssetUrl = (value?: string) => {
 
 /** 与应用详情媒体上传后端 `limits.fileSize` 一致 */
 const CATALOG_MEDIA_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+
+/** 应用广场列表默认每页条数（与后端 DEFAULT_APP_LIST_PAGE_SIZE 一致） */
+const CATALOG_APPS_PAGE_SIZE_DEFAULT = 12;
+
+/** 应用列表搜索防抖（毫秒）；输入停顿后自动请求，回车/搜索按钮立即请求 */
+const APP_SEARCH_DEBOUNCE_MS = 400;
+
+const fetchAppsPageRequest = async (input: {
+  page: number;
+  pageSize: number;
+  keyword: string;
+  categoryId: string;
+}) => {
+  const params: Record<string, string | number> = {
+    page: input.page,
+    pageSize: input.pageSize
+  };
+  const trimmed = input.keyword.trim();
+  if (trimmed) {
+    params.keyword = trimmed;
+  }
+  if (input.categoryId !== 'all') {
+    params.categoryId = input.categoryId;
+  }
+  return request<AppsPagedResponse>('/api/apps', { params, alert: false });
+};
 
 const qrImageOf = (value: string) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(value)}`;
@@ -496,23 +560,105 @@ const HomePage: React.FC = () => {
   const [mediaPreviewIndex, setMediaPreviewIndex] = useState<number | null>(null);
   const [mediaCarouselPage, setMediaCarouselPage] = useState(0);
   const [mediaCarouselPaused, setMediaCarouselPaused] = useState(false);
+  /** 应用列表搜索关键字（防抖请求；回车/搜索按钮立即请求） */
+  const [appListKeyword, setAppListKeyword] = useState('');
+  const [appPagination, setAppPagination] = useState({
+    current: 1,
+    pageSize: CATALOG_APPS_PAGE_SIZE_DEFAULT,
+    total: 0
+  });
+  const appSearchDebounceTimerRef = useRef<ReturnType<typeof window.setTimeout>>();
+  const appSearchSkipDebouncedFetchRef = useRef(false);
+  const appSearchDebouncePrimedRef = useRef(false);
+  /** 跳过首次执行，避免分类切换请求与首轮 loadData 重复 */
+  const catalogCategoryHydratedRef = useRef(false);
   const [categoryForm] = Form.useForm<CategoryFormValues>();
   const [appForm] = Form.useForm<AppFormValues>();
   const isAdmin = currentUser?.role === 'admin';
 
-  const loadData = async () => {
+  const applyAppsPageResponse = (data: AppsPagedResponse) => {
+    setApps(data.list);
+    setAppPagination({
+      current: data.page,
+      pageSize: data.pageSize,
+      total: data.total
+    });
+  };
+
+  const reloadAppsList = async (
+    patch: Partial<{
+      page: number;
+      pageSize: number;
+      keyword: string;
+      categoryId: string;
+    }> = {}
+  ) => {
     setLoading(true);
     try {
-      const [nextCategories, nextApps] = await Promise.all([
-        request<AppCategory[]>('/api/app-categories'),
-        request<AppItem[]>('/api/apps')
-      ]);
-      setCategories(nextCategories);
-      setApps(nextApps);
+      const data = await fetchAppsPageRequest({
+        page: patch.page ?? appPagination.current,
+        pageSize: patch.pageSize ?? appPagination.pageSize,
+        keyword: patch.keyword !== undefined ? patch.keyword : appListKeyword,
+        categoryId: patch.categoryId ?? activeCategoryId
+      });
+      applyAppsPageResponse(data);
     } finally {
       setLoading(false);
     }
   };
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const nextCategories = await request<AppCategory[]>('/api/app-categories');
+      setCategories(nextCategories);
+      const data = await fetchAppsPageRequest({
+        page: 1,
+        pageSize: appPagination.pageSize,
+        keyword: appListKeyword,
+        categoryId: activeCategoryId
+      });
+      applyAppsPageResponse(data);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const flushAppSearchNow = async (keywordForQuery: string) => {
+    await reloadAppsList({ page: 1, keyword: keywordForQuery });
+  };
+
+  const handleAppListSearchSubmit = (value: string) => {
+    window.clearTimeout(appSearchDebounceTimerRef.current);
+    appSearchSkipDebouncedFetchRef.current = true;
+    setAppListKeyword(value);
+    void flushAppSearchNow(value);
+  };
+
+  useEffect(() => {
+    if (!appSearchDebouncePrimedRef.current) {
+      appSearchDebouncePrimedRef.current = true;
+      return;
+    }
+    if (appSearchSkipDebouncedFetchRef.current) {
+      appSearchSkipDebouncedFetchRef.current = false;
+      return;
+    }
+    window.clearTimeout(appSearchDebounceTimerRef.current);
+    appSearchDebounceTimerRef.current = window.setTimeout(() => {
+      void flushAppSearchNow(appListKeyword);
+    }, APP_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(appSearchDebounceTimerRef.current);
+  }, [appListKeyword]);
+
+  useEffect(() => {
+    if (!catalogCategoryHydratedRef.current) {
+      catalogCategoryHydratedRef.current = true;
+      return;
+    }
+    void reloadAppsList({ page: 1 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在切换分类时回到第一页并换 categoryId；关键词由防抖 effect 单独处理
+  }, [activeCategoryId]);
 
   const fetchCurrentUser = async () => {
     const user = await request<CurrentUser>('/api/auth/me', { alert: false });
@@ -712,17 +858,26 @@ const HomePage: React.FC = () => {
     }
   };
 
-  const visibleApps = useMemo(() => {
-    if (activeCategoryId === 'all') {
-      return apps;
+  const memberOwnedAppCount = useMemo(() => {
+    if (typeof memberInfo?.ownedAppCount === 'number') {
+      return memberInfo.ownedAppCount;
     }
-    return apps.filter((item) => {
-      if (typeof item.categoryId === 'string') {
-        return item.categoryId === activeCategoryId;
-      }
-      return item.categoryId?._id === activeCategoryId;
-    });
-  }, [activeCategoryId, apps]);
+    if (!currentUser?.id) {
+      return 0;
+    }
+    return apps.filter((a) => a.ownerUserId === currentUser.id).length;
+  }, [apps, currentUser?.id, memberInfo?.ownedAppCount]);
+
+  /** 非管理员不满足上传条件时的提示（常显按钮 + Tooltip，便于后续扩展文案/规则） */
+  const uploadAppEntryHint = useMemo((): string | null => {
+    if (isAdmin) return null;
+    if (!currentUser?.id) return '请先登录后再上传应用';
+    if (!memberInfo?.isMember) return '上传应用需要先开通会员';
+    if (memberOwnedAppCount >= 1) return '会员最多上架 1 个应用';
+    return null;
+  }, [isAdmin, currentUser?.id, memberInfo?.isMember, memberOwnedAppCount]);
+
+  const uploadAppEntryPrimary = isAdmin || uploadAppEntryHint === null;
 
   const catalogDetailExtras = useMemo(() => {
     if (!selectedApp) {
@@ -803,16 +958,53 @@ const HomePage: React.FC = () => {
     setCategoryModalOpen(true);
   };
 
-  const openAppCreate = () => {
+  const openAppCreate = async () => {
+    if (!currentUser) {
+      await handleLoginEntry();
+      return;
+    }
+    if (!isAdmin) {
+      if (!memberInfo?.isMember) {
+        messageApi.info('上传应用需要先开通会员');
+        await openMemberCenter();
+        return;
+      }
+      if (memberOwnedAppCount >= 1) {
+        messageApi.info('会员最多上架 1 个应用');
+        return;
+      }
+    }
+
+    let uploadCategoryId: string | undefined;
+    if (!isAdmin) {
+      uploadCategoryId = memberInfo?.memberUploadCategoryId;
+      if (!uploadCategoryId) {
+        try {
+          const fresh = await request<MemberInfo>('/api/member/me', { alert: false });
+          uploadCategoryId = fresh.memberUploadCategoryId;
+          setMemberInfo(fresh);
+        } catch {
+          uploadCategoryId = undefined;
+        }
+      }
+      if (!uploadCategoryId) {
+        messageApi.error('无法获取默认分类「我的应用」，请稍后重试');
+        return;
+      }
+    }
+
     setEditingApp(null);
     setAppPackageFile(null);
     setAppPackageInfo(null);
     setAppCoverFile(null);
     appForm.setFieldsValue({
       name: '',
-      categoryId:
-        activeCategoryId !== 'all' ? activeCategoryId : categories.find((item) => item.isActive)?._id,
-      accessLevel: 'login',
+      categoryId: isAdmin
+        ? activeCategoryId !== 'all'
+          ? activeCategoryId
+          : categories.find((item) => item.isActive)?._id
+        : uploadCategoryId,
+      accessLevel: isAdmin ? 'login' : 'owner',
       summary: '',
       description: '',
       cover: '',
@@ -822,6 +1014,17 @@ const HomePage: React.FC = () => {
   };
 
   const openAppEdit = (app: AppItem) => {
+    if (!isAdmin) {
+      if (!memberInfo?.isMember) {
+        messageApi.info('编辑应用需要先开通会员');
+        void openMemberCenter();
+        return;
+      }
+      if (!app.ownerUserId || app.ownerUserId !== currentUser?.id) {
+        messageApi.info('只能编辑本人上架的应用');
+        return;
+      }
+    }
     setEditingApp(app);
     setSelectedApp(null);
     setAppPackageFile(null);
@@ -839,7 +1042,7 @@ const HomePage: React.FC = () => {
     appForm.setFieldsValue({
       name: app.name,
       categoryId: typeof app.categoryId === 'string' ? app.categoryId : app.categoryId._id,
-      accessLevel: app.accessLevel || 'member',
+      accessLevel: app.accessLevel || 'owner',
       summary: app.summary,
       description: app.description,
       cover: app.cover,
@@ -988,6 +1191,7 @@ const HomePage: React.FC = () => {
       setAppPackageFile(null);
       setAppPackageInfo(null);
       await loadData();
+      fetchMemberInfo().catch(() => undefined);
     } finally {
       setSaving(false);
     }
@@ -1009,6 +1213,7 @@ const HomePage: React.FC = () => {
       setSelectedApp(null);
     }
     await loadData();
+    fetchMemberInfo().catch(() => undefined);
   };
 
   const handleVisitApp = async (app: AppItem) => {
@@ -1026,6 +1231,10 @@ const HomePage: React.FC = () => {
     if (!isAdmin) {
       const access = await request<AppAccessPayload>(`/api/apps/${app._id}/access`);
       if (!access.allowed) {
+        if (access.reason === 'owner_required') {
+          messageApi.info('该应用已设为「仅自己可见」，仅本人与管理员可操作');
+          return;
+        }
         if (access.reason === 'member_required') {
           messageApi.info('该应用需要会员权限，请先开通会员');
           await openMemberCenter();
@@ -1048,6 +1257,12 @@ const HomePage: React.FC = () => {
       messageApi.info('查看应用需要先登录');
       await handleLoginEntry();
       return;
+    }
+    if (app.accessLevel === 'owner' && !isAdmin) {
+      if (!currentUser?.id || app.ownerUserId !== currentUser.id) {
+        messageApi.info('该应用已设为「仅自己可见」，仅本人与管理员可操作');
+        return;
+      }
     }
     if (app.accessLevel === 'member' && !isAdmin && !memberInfo?.isMember) {
       messageApi.info('该应用需要会员权限，请先开通会员');
@@ -1087,7 +1302,7 @@ const HomePage: React.FC = () => {
                     className={`catalog-category ${activeCategoryId === category._id ? 'is-active' : ''}`}
                     onClick={() => setActiveCategoryId(category._id)}
                   >
-                    {category.name}
+                    {sidebarCategoryLabel(category, isAdmin)}
                   </button>
                 ))}
               </div>
@@ -1095,11 +1310,27 @@ const HomePage: React.FC = () => {
 
             <main className="catalog-main">
               <div className="catalog-main__header">
-                {isAdmin && activeTopNav === 'apps' ? (
-                  <Button type="primary" onClick={openAppCreate}>
-                    新建应用
-                  </Button>
-                ) : null}
+                <Input.Search
+                  className="catalog-main__search"
+                  allowClear
+                  placeholder="搜索应用名称、摘要或描述…"
+                  value={appListKeyword}
+                  onChange={(e) => setAppListKeyword(e.target.value)}
+                  onSearch={(v) => handleAppListSearchSubmit(v)}
+                  enterButton
+                />
+                <div className="catalog-main__header-actions">
+                  {activeTopNav === 'apps' ? (
+                    <Tooltip title={uploadAppEntryHint ?? undefined}>
+                      <Button
+                        type={uploadAppEntryPrimary ? 'primary' : 'default'}
+                        onClick={() => void openAppCreate()}
+                      >
+                        {isAdmin ? '新建应用' : '上传应用'}
+                      </Button>
+                    </Tooltip>
+                  ) : null}
+                </div>
               </div>
 
               {activeTopNav === 'categories' ? (
@@ -1108,9 +1339,9 @@ const HomePage: React.FC = () => {
                 </div>
               ) : (
                 <Spin spinning={loading}>
-                  {visibleApps.length ? (
+                  {apps.length ? (
                     <div className="catalog-app-list">
-                      {visibleApps.map((app) => (
+                      {apps.map((app) => (
                         <div key={app._id} className="catalog-app-list__item">
                           <div
                             className="catalog-app-card"
@@ -1146,6 +1377,19 @@ const HomePage: React.FC = () => {
                       <Empty description="当前分类下暂无应用" />
                     </div>
                   )}
+                  {appPagination.total > 0 ? (
+                    <div className="catalog-main__pagination">
+                      <Pagination
+                        current={appPagination.current}
+                        pageSize={appPagination.pageSize}
+                        total={appPagination.total}
+                        showSizeChanger
+                        pageSizeOptions={['12', '24', '48']}
+                        showTotal={(total) => `共 ${total} 条`}
+                        onChange={(page, pageSize) => void reloadAppsList({ page, pageSize })}
+                      />
+                    </div>
+                  ) : null}
                 </Spin>
               )}
             </main>
@@ -1217,7 +1461,9 @@ const HomePage: React.FC = () => {
                 关闭
               </Button>
               <Space wrap className="catalog-app-detail-modal__footer-actions">
-                {isAdmin ? (
+                {isAdmin ||
+                (Boolean(currentUser?.id && selectedApp.ownerUserId === currentUser.id) &&
+                  memberInfo?.isMember) ? (
                   <Popconfirm
                     key="delete"
                     title="确认删除该应用？"
@@ -1226,7 +1472,9 @@ const HomePage: React.FC = () => {
                     <Button danger>删除</Button>
                   </Popconfirm>
                 ) : null}
-                {isAdmin ? (
+                {isAdmin ||
+                (Boolean(currentUser?.id && selectedApp.ownerUserId === currentUser.id) &&
+                  memberInfo?.isMember) ? (
                   <Button key="edit" onClick={() => openAppEdit(selectedApp)}>
                     编辑
                   </Button>
@@ -1252,7 +1500,7 @@ const HomePage: React.FC = () => {
               <div className="catalog-app-detail__banner-scrim" aria-hidden />
               <div className="catalog-app-detail__banner-text">
                 <div className="catalog-app-detail__banner-eyebrow">
-                  {categoryNameOf(selectedApp.categoryId) || '应用'}
+                  {categoryLabelForViewer(selectedApp.categoryId, isAdmin) || '应用'}
                 </div>
                 <h2 className="catalog-app-detail__banner-title">{selectedApp.name}</h2>
               </div>
@@ -1429,8 +1677,12 @@ const HomePage: React.FC = () => {
                   : '选择套餐后使用微信扫码支付，支付成功自动到账'}
               </div>
             </div>
-            <div className={`member-panel__badge ${memberInfo?.isMember ? 'is-active' : ''}`}>
-              {memberInfo?.isMember ? 'VIP' : '普通用户'}
+            <div
+              className={`member-panel__badge ${
+                memberInfo?.isMember || isAdmin ? 'is-active' : ''
+              }`}
+            >
+              {catalogAccountKindLabelOf(currentUser, memberInfo)}
             </div>
           </div>
 
@@ -1626,26 +1878,45 @@ const HomePage: React.FC = () => {
             <Form.Item label="应用名称" name="name" rules={[{ required: true, message: '请输入应用名称' }]}>
               <Input placeholder="请输入应用名称" />
             </Form.Item>
-            <Form.Item label="分类" name="categoryId" rules={[{ required: true, message: '请选择分类' }]}>
-              <Select
-                placeholder="请选择所属分类"
-                options={categories.map((item) => ({
-                  label: item.name,
-                  value: item._id
-                }))}
-              />
-            </Form.Item>
+            {isAdmin ? (
+              <Form.Item label="分类" name="categoryId" rules={[{ required: true, message: '请选择分类' }]}>
+                <Select
+                  placeholder="请选择所属分类"
+                  options={categories.map((item) => ({
+                    label: item.name,
+                    value: item._id
+                  }))}
+                />
+              </Form.Item>
+            ) : null}
           </div>
 
-          <Form.Item label="访问级别" name="accessLevel" rules={[{ required: true, message: '请选择访问级别' }]}>
-            <Select
-              options={[
-                { label: '登录可用', value: 'login' },
-                { label: '会员', value: 'member' },
-                { label: '单独授权', value: 'explicit' }
-              ]}
-            />
-          </Form.Item>
+          {!isAdmin ? (
+            <>
+              <Form.Item name="categoryId" hidden rules={[{ required: true, message: '缺少默认分类' }]}>
+                <Input type="hidden" />
+              </Form.Item>
+              <Form.Item name="accessLevel" hidden rules={[{ required: true, message: '缺少访问级别' }]}>
+                <Input type="hidden" />
+              </Form.Item>
+            </>
+          ) : (
+            <Form.Item
+              label="访问级别"
+              name="accessLevel"
+              rules={[{ required: true, message: '请选择访问级别' }]}
+              tooltip="其他用户在应用广场中看不到该应用；仅你自己的账号和管理员可操作。"
+            >
+              <Select
+                options={[
+                  { label: '登录可用', value: 'login' },
+                  { label: '会员', value: 'member' },
+                  { label: '单独授权', value: 'explicit' },
+                  { label: '仅自己可见', value: 'owner' }
+                ]}
+              />
+            </Form.Item>
+          )}
 
           <Form.Item label="摘要" name="summary">
             <Input.TextArea rows={2} placeholder="请输入简短摘要，用于卡片展示" />

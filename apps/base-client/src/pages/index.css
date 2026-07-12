@@ -1,6 +1,6 @@
 .catalog-page {
   min-height: 100%;
-  padding: 20px 22px 28px;
+  padding: 18px clamp(16px, 4vw, 28px) 26px;
   background-color: #f4f6fb;
   background-image:
     radial-gradient(circle at 1px 1px, rgba(15, 23, 42, 0.045) 1px, transparent 0),
@@ -9,13 +9,21 @@
   background-size: 22px 22px, auto, auto;
 }
 
+/** 顶栏与各页主内容共用宽度，超宽屏避免卡片列数过多 */
+.catalog-page__inner {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1400px;
+  margin-inline: auto;
+}
+
 .catalog-page__hero {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 18px;
-  padding: 16px 20px;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
   border: 1px solid rgba(15, 23, 42, 0.06);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.88);
@@ -125,7 +133,8 @@
 .catalog-layout {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
-  gap: 14px;
+  gap: 16px;
+  align-items: start;
 }
 
 .catalog-sidebar,
@@ -140,16 +149,50 @@
 }
 
 .catalog-sidebar {
-  padding: 14px;
+  padding: 16px;
 }
 
-.catalog-sidebar__header,
-.catalog-main__header {
+.catalog-sidebar__header {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+}
+
+.catalog-main__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+}
+
+.catalog-main__search {
+  flex: 1 1 240px;
+  max-width: 440px;
+  min-width: 200px;
+  margin: 0;
+}
+
+.catalog-main__search.ant-input-search .ant-input-group {
+  width: 100%;
+}
+
+.catalog-main__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.catalog-main__pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+  padding-top: 4px;
 }
 
 .catalog-category-list {
@@ -181,7 +224,7 @@
 }
 
 .catalog-main {
-  padding: 16px;
+  padding: 18px 20px 22px;
 }
 
 .catalog-main--wide {
@@ -362,7 +405,7 @@
 .catalog-app-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(252px, 1fr));
-  gap: 20px;
+  gap: 16px;
 }
 
 .catalog-app-list__item {
@@ -1668,7 +1711,24 @@
 
 @media (max-width: 960px) {
   .catalog-page {
-    padding: 12px;
+    padding: 14px clamp(12px, 4vw, 20px) 20px;
+  }
+
+  .catalog-layout {
+    gap: 12px;
+  }
+
+  .catalog-sidebar {
+    padding: 14px;
+  }
+
+  .catalog-main {
+    padding: 14px 16px 18px;
+  }
+
+  .catalog-main__header {
+    margin-bottom: 14px;
+    gap: 10px 12px;
   }
 
   .catalog-page__hero,

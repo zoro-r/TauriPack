@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import axios from 'axios';
 import {
   Button,
   Col,
@@ -17,8 +18,9 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
-import request from '../../utils/request';
+import request, { apiBase } from '../../utils/request';
 import { formatDateTime } from '../../utils/auth';
+import { serialColumn } from '../../utils/tableColumns';
 
 interface MemberPlanItem {
   _id: string;
@@ -31,7 +33,14 @@ interface AppItem {
   _id: string;
   name: string;
   slug: string;
-  accessLevel: 'login' | 'member' | 'explicit';
+  accessLevel: 'login' | 'member' | 'explicit' | 'owner';
+}
+
+interface AppsPagedResponse {
+  list: AppItem[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 interface RedeemBatchItem {
@@ -103,6 +112,26 @@ interface RedeemCodeFilters {
   grantType?: RedeemBatchItem['grantType'];
 }
 
+interface RedeemCodesPagedResponse {
+  list: RedeemCodeItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+const redeemCodesFilterParams = (f: RedeemCodeFilters) => ({
+  keyword: f.keyword?.trim() || undefined,
+  status: f.status || undefined,
+  batchId: f.batchId || undefined,
+  grantType: f.grantType || undefined
+});
+
+const redeemCodesRequestParams = (f: RedeemCodeFilters, page: number, pageSize: number) => ({
+  ...redeemCodesFilterParams(f),
+  page,
+  pageSize
+});
+
 const batchStatusLabelOf = (value: RedeemBatchItem['status']) => {
   if (value === 'active') return '启用';
   if (value === 'disabled') return '停用';
@@ -131,6 +160,12 @@ const RedeemCodesPage: React.FC = () => {
   const [plans, setPlans] = useState<MemberPlanItem[]>([]);
   const [apps, setApps] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [codesTotal, setCodesTotal] = useState(0);
+  const [codePagination, setCodePagination] = useState<{ current: number; pageSize: number }>({
+    current: 1,
+    pageSize: 20
+  });
+  const [excelExporting, setExcelExporting] = useState(false);
   const [batchManageOpen, setBatchManageOpen] = useState(false);
   const [batchFormOpen, setBatchFormOpen] = useState(false);
   const [generateModalOpen, setGenerateModalOpen] = useState(false);
@@ -150,33 +185,37 @@ const RedeemCodesPage: React.FC = () => {
     return typeof batch.planId === 'string' ? '--' : batch.planId?.name || '--';
   };
 
-  const loadAll = async (nextFilters: RedeemCodeFilters = filters) => {
+  const loadAll = async (
+    nextFilters: RedeemCodeFilters = filters,
+    page: number = codePagination.current,
+    pageSize: number = codePagination.pageSize
+  ) => {
     setLoading(true);
     try {
-      const [nextBatches, nextCodes, nextPlans, nextApps] = await Promise.all([
+      const [nextBatches, nextCodesPage, nextPlans, nextApps] = await Promise.all([
         request<RedeemBatchItem[]>('/api/admin/redeem/batches'),
-        request<RedeemCodeItem[]>('/api/admin/redeem/codes', {
-          params: {
-            keyword: nextFilters.keyword?.trim() || undefined,
-            status: nextFilters.status || undefined,
-            batchId: nextFilters.batchId || undefined,
-            grantType: nextFilters.grantType || undefined
-          }
+        request<RedeemCodesPagedResponse>('/api/admin/redeem/codes', {
+          params: redeemCodesRequestParams(nextFilters, page, pageSize)
         }),
         request<MemberPlanItem[]>('/api/admin/member/plans'),
-        request<AppItem[]>('/api/apps')
+        request<AppsPagedResponse>('/api/apps', { params: { page: 1, pageSize: 500 }, alert: false })
       ]);
       setBatches(nextBatches);
-      setCodes(nextCodes);
+      setCodes(nextCodesPage.list);
+      setCodesTotal(nextCodesPage.total);
+      setCodePagination({ current: nextCodesPage.page, pageSize: nextCodesPage.pageSize });
       setPlans(nextPlans.filter((item: any) => item.isActive !== false));
-      setApps(nextApps);
+      setApps(nextApps.list);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadAll().catch((error) => messageApi.error(error?.message || '兑换码数据加载失败'));
+    loadAll({}, 1, codePagination.pageSize).catch((error) =>
+      messageApi.error(error?.message || '兑换码数据加载失败')
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap once
   }, []);
 
   const updateFilters = (patch: Partial<RedeemCodeFilters>) => {
@@ -193,13 +232,69 @@ const RedeemCodesPage: React.FC = () => {
   };
 
   const submitSearch = async () => {
-    await loadAll(filters);
+    await loadAll(filters, 1, codePagination.pageSize);
   };
 
   const resetSearch = async () => {
     const nextFilters: RedeemCodeFilters = {};
     setFilters(nextFilters);
-    await loadAll(nextFilters);
+    await loadAll(nextFilters, 1, codePagination.pageSize);
+  };
+
+  const exportCodesExcel = async () => {
+    setExcelExporting(true);
+    try {
+      const res = await axios.get(`${apiBase}/api/admin/redeem/codes/export`, {
+        params: redeemCodesFilterParams(filters),
+        withCredentials: true,
+        responseType: 'blob',
+        validateStatus: () => true
+      });
+
+      const contentType = String(res.headers['content-type'] || '');
+      const disposition = String(res.headers['content-disposition'] || '');
+      const looksLikeXlsx =
+        contentType.includes('spreadsheetml') ||
+        disposition.toLowerCase().includes('.xlsx');
+
+      if (!looksLikeXlsx || !(res.status >= 200 && res.status < 300)) {
+        const text = typeof (res.data as Blob).text === 'function' ? await (res.data as Blob).text() : String(res.data);
+        try {
+          const payload = JSON.parse(text) as { message?: string };
+          messageApi.error(payload?.message || '导出失败');
+        } catch {
+          messageApi.error('导出失败');
+        }
+        return;
+      }
+
+      const blob =
+        res.data instanceof Blob
+          ? res.data
+          : new Blob([res.data as BlobPart], {
+              type:
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            });
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = `redeem-codes-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.xlsx`;
+      anchor.click();
+      URL.revokeObjectURL(href);
+
+      const truncated = String(res.headers['x-export-truncated'] || '') === '1';
+      if (truncated) {
+        messageApi.warning(
+          '当前筛选条件下的兑换码总数超过导出上限（约 25000 条），文件仅包含前若干条，请收窄筛选后再导出完整列表。'
+        );
+      } else {
+        messageApi.success('已开始下载 Excel 文件');
+      }
+    } catch (error: any) {
+      messageApi.error(error?.message || '导出失败');
+    } finally {
+      setExcelExporting(false);
+    }
   };
 
   const openBatchCreate = () => {
@@ -275,7 +370,7 @@ const RedeemCodesPage: React.FC = () => {
       messageApi.success('兑换活动已创建');
     }
     setBatchFormOpen(false);
-    await loadAll();
+    await loadAll(filters, codePagination.current, codePagination.pageSize);
   };
 
   const submitGenerate = async () => {
@@ -286,10 +381,11 @@ const RedeemCodesPage: React.FC = () => {
     });
     messageApi.success('兑换码已生成');
     setGenerateModalOpen(false);
-    await loadAll();
+    await loadAll(filters, codePagination.current, codePagination.pageSize);
   };
 
   const batchColumns: ColumnsType<RedeemBatchItem> = [
+    serialColumn<RedeemBatchItem>(),
     { title: '活动名', dataIndex: 'name' },
     {
       title: '权益类型',
@@ -341,6 +437,7 @@ const RedeemCodesPage: React.FC = () => {
   ];
 
   const codeColumns: ColumnsType<RedeemCodeItem> = [
+    serialColumn<RedeemCodeItem>(codePagination.current, codePagination.pageSize),
     { title: '兑换码', dataIndex: 'code' },
     {
       title: '状态',
@@ -424,7 +521,10 @@ const RedeemCodesPage: React.FC = () => {
               查询
             </Button>
             <Button onClick={resetSearch}>重置</Button>
-            <Button onClick={() => loadAll(filters)}>刷新</Button>
+            <Button onClick={() => loadAll(filters, codePagination.current, codePagination.pageSize)}>刷新</Button>
+            <Button loading={excelExporting} onClick={() => void exportCodesExcel()}>
+              导出 Excel
+            </Button>
             <Button onClick={() => setBatchManageOpen(true)}>活动管理</Button>
             <Button type="primary" onClick={() => setGenerateModalOpen(true)}>
               生成兑换码
@@ -438,7 +538,17 @@ const RedeemCodesPage: React.FC = () => {
           columns={codeColumns}
           dataSource={codes}
           loading={loading}
-          pagination={false}
+          pagination={{
+            current: codePagination.current,
+            pageSize: codePagination.pageSize,
+            total: codesTotal,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100'],
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (page, pageSize) => {
+              void loadAll(filters, page, pageSize);
+            }
+          }}
           scroll={{ x: 1040 }}
         />
       </main>

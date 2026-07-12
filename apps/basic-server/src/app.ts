@@ -103,7 +103,6 @@ app.use(async (ctx, next) => {
   if (ctx.path.startsWith('/static/')) {
     if (ctx.path.startsWith('/static/apps/')) {
       try {
-        const user = await requireUser(ctx);
         const appSlug = ctx.path.replace('/static/apps/', '').split('/')[0];
         if (!appSlug) {
           ctx.status = 404;
@@ -117,6 +116,15 @@ app.use(async (ctx, next) => {
           return;
         }
 
+        /** 会员自助上架应用在库中有 ownerUserId；其静态站点对访客直接开放（不做登录/会员/授权校验） */
+        const isMemberSelfListed = Boolean(appItem.ownerUserId);
+        if (isMemberSelfListed) {
+          const relativePath = ctx.path.replace('/static/', '');
+          ctx.path = '/' + relativePath;
+          return serve(staticPath)(ctx, next);
+        }
+
+        const user = await requireUser(ctx);
         if (user.role !== 'admin') {
           if (appItem.accessLevel === 'member') {
             const memberAccount = await MemberAccountModel.findOne({ userId: user._id }).lean();
@@ -138,6 +146,14 @@ app.use(async (ctx, next) => {
               $or: [{ expiredAt: { $exists: false } }, { expiredAt: null }, { expiredAt: { $gt: new Date() } }]
             }).lean();
             if (!entitlement) {
+              const forbiddenTarget = `/forbidden/app?redirect=${encodeURIComponent(ctx.href)}`;
+              ctx.redirect(forbiddenTarget);
+              return;
+            }
+          }
+
+          if (appItem.accessLevel === 'owner') {
+            if (appItem.ownerUserId?.toString() !== user._id.toString()) {
               const forbiddenTarget = `/forbidden/app?redirect=${encodeURIComponent(ctx.href)}`;
               ctx.redirect(forbiddenTarget);
               return;
