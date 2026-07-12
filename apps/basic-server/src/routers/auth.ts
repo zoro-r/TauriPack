@@ -1,5 +1,6 @@
 import type Router from '@koa/router';
 import {
+  devLoginToken,
   exchangeToken,
   getMenus,
   getWechatQr,
@@ -17,6 +18,7 @@ export default function authRouter(router: Router) {
   router.get('/api/auth/me', getMe);
   router.get('/api/auth/menus', getMenus);
   router.post('/api/auth/token', exchangeToken);
+  router.post('/api/auth/dev-login', devLoginToken);
   router.post('/api/auth/refresh', refreshToken);
   router.post('/api/auth/logout', logoutToken);
 }

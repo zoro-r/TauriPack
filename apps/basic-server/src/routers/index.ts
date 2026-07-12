@@ -8,6 +8,7 @@ import memberRouter from './member';
 import adminRouter from './admin';
 import redeemRouter from './redeem';
 import adminRedeemRouter from './adminRedeem';
+import newApiRouter from './newApi';
 
 export const initRouter = (app: Koa) => {
   const router = new Router();
@@ -20,6 +21,7 @@ export const initRouter = (app: Koa) => {
   adminRouter(router);
   redeemRouter(router);
   adminRedeemRouter(router);
+  newApiRouter(router);
 
   app.use(router.routes());
   app.use(router.allowedMethods());

@@ -1,5 +1,6 @@
 import type Router from '@koa/router';
 import {
+  createDevLoginTokens,
   createLoginState,
   exchangeLoginCode,
   getLoginStatus,
@@ -150,6 +151,30 @@ export const logoutToken = async (ctx: Router.RouterContext) => {
   } catch (err) {
     clearSessionCookies(ctx);
     ctx.body = errorResponse('退出登录失败', err);
+  }
+};
+
+export const devLoginToken = async (ctx: Router.RouterContext) => {
+  try {
+    const tokenData = await createDevLoginTokens({
+      deviceType: 'dev-login',
+      userAgent: ctx.get('user-agent'),
+      ip: ctx.ip
+    });
+    ctx.cookies.set(
+      'accessToken',
+      tokenData.accessToken,
+      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
+    );
+    ctx.cookies.set(
+      'refreshToken',
+      tokenData.refreshToken,
+      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
+    );
+    ctx.body = success(tokenData);
+  } catch (err) {
+    clearSessionCookies(ctx);
+    ctx.body = errorResponse('测试登录失败', err);
   }
 };
 

@@ -6,6 +6,7 @@ import MemberBenefitLogModel from '@/models/MemberBenefitLog';
 import AppItemModel from '@/models/AppItem';
 import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategoryService';
 import { createNativeWechatPayOrder, queryWechatPayOrder } from '@/services/wechatPayService';
+import { createNewApiRechargeOrder, creditNewApiRecharge } from '@/services/newApiService';
 
 export interface MemberPlanInput {
   name: string;
@@ -34,6 +35,8 @@ const DEFAULT_PLANS = [
 const amountToCent = (amount: number) => Math.round(amount * 100);
 
 const buildOrderNo = () => `MB${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+
+const buildRechargeOrderNo = () => `AR${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
 const getForceOneFenUserIds = () =>
   String(process.env.MEMBER_PAY_FORCE_1FEN_USER_IDS || '')
@@ -171,7 +174,23 @@ const markOrderAsPaid = async (payload: {
     await order.save();
   }
 
-  await grantMemberBenefit(order._id.toString());
+  if (order.orderType === 'member') {
+    await grantMemberBenefit(order._id.toString());
+  }
+  if (order.orderType === 'recharge') {
+    const snapshot = order.snapshot as { quota?: number; remoteUserId?: string } | undefined;
+    const quota = Number(snapshot?.quota || 0);
+    const remoteUserId = String(snapshot?.remoteUserId || '');
+    if (!quota || !remoteUserId) {
+      throw new Error('充值订单缺少额度信息');
+    }
+    await creditNewApiRecharge({
+      orderId: order._id.toString(),
+      userId: order.userId.toString(),
+      quota,
+      remoteUserId
+    });
+  }
   return order;
 };
 
@@ -351,6 +370,52 @@ export const createMemberOrder = async (userId: string, planCode: string) => {
   };
 };
 
+export const createApiRechargeOrder = async (userId: string, amount: number) => {
+  const recharge = await createNewApiRechargeOrder(userId, amount);
+  const orderNo = buildRechargeOrderNo();
+  const forceOneFen = shouldForceOneFen(userId);
+  const payableAmount = forceOneFen ? 0.01 : recharge.amount;
+  const description = `API 账户充值 ${recharge.amount} 元`;
+  const codeUrl = await createNativeWechatPayOrder({
+    outTradeNo: orderNo,
+    description,
+    amountCent: amountToCent(payableAmount)
+  });
+  const order = await MemberOrderModel.create({
+    orderNo,
+    userId,
+    orderType: 'recharge',
+    amount: payableAmount,
+    status: 'pending',
+    payChannel: 'wechat_native',
+    wechatPrepayCodeUrl: codeUrl,
+    expiredAt: new Date(Date.now() + 30 * 60 * 1000),
+    title: 'API 账户充值',
+    description,
+    snapshot: {
+      quota: recharge.quota,
+      remoteUserId: recharge.remoteUserId
+    }
+  });
+  payLog('recharge.create.success', {
+    userId,
+    orderId: order._id.toString(),
+    orderNo,
+    amount: recharge.amount,
+    payableAmount,
+    quota: recharge.quota
+  });
+  return {
+    id: order._id.toString(),
+    orderNo,
+    amount: payableAmount,
+    quota: recharge.quota,
+    status: order.status,
+    payChannel: order.payChannel,
+    codeUrl
+  };
+};
+
 export const getMemberOrderDetail = async (userId: string, orderId: string) => {
   const order = await MemberOrderModel.findOne({ _id: orderId, userId })
     .populate('planId', 'name code price durationDays')
@@ -373,7 +438,18 @@ export const syncMemberOrderStatus = async (userId: string, orderId: string) => 
     status: order.status
   });
   if (order.status === 'paid') {
-    await grantMemberBenefit(order._id.toString());
+    if (order.orderType === 'member') {
+      await grantMemberBenefit(order._id.toString());
+    }
+    if (order.orderType === 'recharge') {
+      const snapshot = order.snapshot as { quota?: number; remoteUserId?: string } | undefined;
+      await creditNewApiRecharge({
+        orderId: order._id.toString(),
+        userId: order.userId.toString(),
+        quota: Number(snapshot?.quota || 0),
+        remoteUserId: String(snapshot?.remoteUserId || '')
+      });
+    }
     return getMemberOrderDetail(userId, orderId);
   }
 

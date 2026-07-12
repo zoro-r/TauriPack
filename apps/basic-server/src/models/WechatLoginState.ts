@@ -23,7 +23,7 @@ const wechatLoginStateSchema = new Schema<WechatLoginStateDocument>(
     },
     userId: { type: Schema.Types.ObjectId, ref: 'User' },
     loginCode: { type: String, index: true },
-    expiresAt: { type: Date, required: true, index: true }
+    expiresAt: { type: Date, required: true }
   },
   { timestamps: true }
 );

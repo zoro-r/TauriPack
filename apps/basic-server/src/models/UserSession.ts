@@ -32,7 +32,7 @@ const userSessionSchema = new Schema<UserSessionDocument>(
       index: true
     },
     lastActiveAt: { type: Date, required: true, default: () => new Date() },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
     revokedAt: { type: Date }
   },
   { timestamps: true }

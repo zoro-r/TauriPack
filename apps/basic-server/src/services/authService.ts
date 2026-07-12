@@ -84,6 +84,7 @@ const getAdminWechatOpenIds = () => [
 ];
 
 const shouldBeAdmin = (wechatOpenId: string) => getAdminWechatOpenIds().includes(wechatOpenId);
+const isDevLoginEnabled = () => process.env.ENABLE_DEV_LOGIN === 'true';
 
 const signAccessToken = (userId: string, sessionId: string) => {
   const secret = getRequiredEnv('JWT_ACCESS_SECRET');
@@ -147,6 +148,36 @@ const createUserSession = async (input: {
     lastActiveAt: new Date(),
     expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000)
   });
+};
+
+const issueUserTokens = async (
+  userId: string,
+  sessionContext?: { deviceId?: string; deviceType?: string; userAgent?: string; ip?: string }
+) => {
+  const session = await createUserSession({
+    userId,
+    deviceId: sessionContext?.deviceId,
+    deviceType: sessionContext?.deviceType,
+    userAgent: sessionContext?.userAgent,
+    ip: sessionContext?.ip
+  });
+
+  const access = signAccessToken(userId, session.sessionId);
+  const refresh = signRefreshToken(userId, session.sessionId);
+
+  await RefreshTokenModel.create({
+    userId,
+    sessionId: session.sessionId,
+    jti: refresh.jti,
+    tokenHash: hashToken(refresh.token),
+    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000)
+  });
+
+  return {
+    accessToken: access.token,
+    refreshToken: refresh.token,
+    expiresIn: ACCESS_TOKEN_TTL_SECONDS
+  };
 };
 
 export const createLoginState = async () => {
@@ -226,35 +257,36 @@ export const exchangeLoginCode = async (
     throw new Error('Invalid login code');
   }
   const userId = loginState.userId.toString();
-
-  const session = await createUserSession({
-    userId,
-    deviceId: sessionContext?.deviceId,
-    deviceType: sessionContext?.deviceType,
-    userAgent: sessionContext?.userAgent,
-    ip: sessionContext?.ip
-  });
-
-  const access = signAccessToken(userId, session.sessionId);
-  const refresh = signRefreshToken(userId, session.sessionId);
-
-  await RefreshTokenModel.create({
-    userId: loginState.userId,
-    sessionId: session.sessionId,
-    jti: refresh.jti,
-    tokenHash: hashToken(refresh.token),
-    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000)
-  });
+  const tokenData = await issueUserTokens(userId, sessionContext);
 
   loginState.status = 'EXPIRED';
   loginState.loginCode = undefined;
   await loginState.save();
 
-  return {
-    accessToken: access.token,
-    refreshToken: refresh.token,
-    expiresIn: ACCESS_TOKEN_TTL_SECONDS
-  };
+  return tokenData;
+};
+
+export const createDevLoginTokens = async (sessionContext?: {
+  deviceId?: string;
+  deviceType?: string;
+  userAgent?: string;
+  ip?: string;
+}) => {
+  if (!isDevLoginEnabled()) {
+    throw new Error('测试免登录未开启');
+  }
+
+  const devOpenId = String(process.env.DEV_LOGIN_OPEN_ID || '').trim();
+  if (!devOpenId) {
+    throw new Error('Missing env: DEV_LOGIN_OPEN_ID');
+  }
+
+  const user = await UserModel.findOne({ wechatOpenId: devOpenId });
+  if (!user) {
+    throw new Error('测试登录用户不存在');
+  }
+
+  return issueUserTokens(user._id.toString(), sessionContext);
 };
 
 export const refreshTokens = async (refreshToken: string) => {
@@ -361,16 +393,17 @@ export const getNavMenus = async (accessToken?: string) => {
     if (role === 'admin') {
       return [
         ...baseMenus,
+        { key: 'apiKeys', label: 'API Key 管理', path: '/api-keys' },
         { key: 'users', label: '会员管理', path: '/members' },
         { key: 'orders', label: '订单管理', path: '/orders' },
         { key: 'redeemCodes', label: '兑换码管理', path: '/redeem-codes' }
       ];
     }
+
+    return [...baseMenus, { key: 'apiKeys', label: 'API Key 管理', path: '/api-keys' }];
   } catch {
     return baseMenus;
   }
-
-  return baseMenus;
 };
 
 export const verifyAccessToken = async (accessToken: string) => {

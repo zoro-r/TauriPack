@@ -138,3 +138,13 @@ pnpm run migrate
 2. 数据库凭据是否正确
 3. MongoDB服务是否正在运行
 4. 是否有足够的权限访问目标数据库
+# API Wallet Recharge
+
+API wallet recharge uses the existing WeChat Native payment callback. Configure both values below to enable fixed recharge options:
+
+```env
+NEW_API_QUOTA_PER_YUAN=500000
+NEW_API_RECHARGE_AMOUNTS=10,50,100
+```
+
+`NEW_API_QUOTA_PER_YUAN` is the API quota credited for each CNY 1. The values in `NEW_API_RECHARGE_AMOUNTS` are the only user-selectable payment amounts. Payment settlement is idempotently recorded before the user account is credited.

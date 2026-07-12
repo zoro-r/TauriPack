@@ -19,6 +19,13 @@ const defaultMenus: NavMenuItem[] = [{ key: 'apps', label: '应用广场', path:
 const plainLayoutPaths = ['/auth', '/forbidden', '/login', '/success'];
 const qrImageOf = (value: string) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(value)}`;
+const shouldUseDevLogin = () => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const host = window.location.hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+};
 
 interface MemberPlan {
   _id: string;
@@ -336,6 +343,14 @@ const RootLayout: React.FC = () => {
   const handleLoginEntry = async () => {
     setLoginLoading(true);
     try {
+      if (shouldUseDevLogin()) {
+        await request('/api/auth/dev-login', {
+          method: 'POST',
+          alert: false
+        });
+        window.location.reload();
+        return;
+      }
       const data = await request<LoginStatePayload>('/api/auth/wechat/qr', { alert: false });
       setLoginState(data);
       setLoginStatusText('请使用微信扫码登录');
@@ -422,6 +437,10 @@ const RootLayout: React.FC = () => {
 
   const userMenuItems: MenuProps['items'] = [
     {
+      key: 'apiKeys',
+      label: 'API Key 管理'
+    },
+    {
       key: 'orders',
       label: '我的订单'
     },
@@ -493,6 +512,10 @@ const RootLayout: React.FC = () => {
                       menu={{
                         items: userMenuItems,
                         onClick: ({ key }) => {
+                          if (key === 'apiKeys') {
+                            history.push('/api-keys');
+                            return;
+                          }
                           if (key === 'orders') {
                             openUserOrders().catch(() => undefined);
                             return;
