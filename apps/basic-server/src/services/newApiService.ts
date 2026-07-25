@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import http from 'http';
 import https from 'https';
 import type { IncomingHttpHeaders } from 'http';
+import type { ServerResponse } from 'http';
 import type { UserDocument } from '@/models/User';
 import NewApiAccountModel from '@/models/NewApiAccount';
 import NewApiRechargeModel from '@/models/NewApiRecharge';
@@ -974,4 +975,43 @@ export const relayNewApiChatCompletion = async (input: NewApiChatCompletionInput
     throw new Error(extractErrorMessage(response.data, '模型请求失败'));
   }
   return response.data;
+};
+
+export const proxyNewApiOpenAiRequest = async (input: {
+  method: 'GET' | 'POST';
+  path: string;
+  authorization: string;
+  body?: unknown;
+}, output: ServerResponse) => {
+  const token = String(input.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  if (!token) {
+    throw new Error('Authorization Bearer API Key 不可为空');
+  }
+  const config = getConfig();
+  const url = new URL(input.path, `${config.baseUrl}/`);
+  const bodyText = input.body === undefined ? '' : JSON.stringify(input.body);
+  await new Promise<void>((resolve, reject) => {
+    const requestOptions = {
+      method: input.method,
+      headers: {
+        Accept: 'application/json, text/event-stream',
+        ...(bodyText ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyText) } : {}),
+        Authorization: `Bearer ${token}`
+      }
+    };
+    const proxyRequest = url.protocol === 'https:'
+      ? https.request(url, requestOptions as any, (response) => {
+          output.writeHead(response.statusCode || 502, response.headers);
+          response.pipe(output);
+          response.on('end', resolve);
+        })
+      : http.request(url, requestOptions, (response) => {
+          output.writeHead(response.statusCode || 502, response.headers);
+          response.pipe(output);
+          response.on('end', resolve);
+        });
+    proxyRequest.on('error', reject);
+    if (bodyText) proxyRequest.write(bodyText);
+    proxyRequest.end();
+  });
 };

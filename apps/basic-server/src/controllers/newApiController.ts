@@ -5,7 +5,7 @@ import {
   getNewApiKeySecret,
   listNewApiUsage,
   listNewApiModels,
-  relayNewApiChatCompletion,
+  proxyNewApiOpenAiRequest,
   getNewApiWallet as getNewApiWalletOverview,
   deleteNewApiKey,
   getNewApiAccountOverview,
@@ -103,12 +103,28 @@ export const postNewApiKeySecret = async (ctx: Router.RouterContext) => {
 
 export const postNewApiChatCompletion = async (ctx: Router.RouterContext) => {
   try {
-    ctx.body = await relayNewApiChatCompletion({
+    ctx.respond = false;
+    await proxyNewApiOpenAiRequest({
+      method: 'POST',
+      path: '/v1/chat/completions',
       authorization: String(ctx.headers.authorization || ''),
       body: ctx.request.body || {}
-    });
+    }, ctx.res);
   } catch (err) {
-    ctx.body = errorResponse('chat completion failed', err);
+    ctx.respond = false;
+    ctx.res.writeHead(401, { 'Content-Type': 'application/json' });
+    ctx.res.end(JSON.stringify({ error: { message: err instanceof Error ? err.message : 'Chat completion failed', type: 'invalid_request_error', param: null, code: null } }));
+  }
+};
+
+export const getNewApiOpenAiModels = async (ctx: Router.RouterContext) => {
+  try {
+    ctx.respond = false;
+    await proxyNewApiOpenAiRequest({ method: 'GET', path: '/v1/models', authorization: String(ctx.headers.authorization || '') }, ctx.res);
+  } catch (err) {
+    ctx.respond = false;
+    ctx.res.writeHead(401, { 'Content-Type': 'application/json' });
+    ctx.res.end(JSON.stringify({ error: { message: err instanceof Error ? err.message : 'Models request failed', type: 'invalid_request_error', param: null, code: null } }));
   }
 };
 

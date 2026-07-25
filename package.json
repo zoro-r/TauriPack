@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "turbo run dev tauri:dev --parallel",
     "build": "turbo run build",
-    "server": "cd apps/basic-server && npm run serve"
+    "server": "cd apps/basic-server && npm run serve",
+    "deploy": "bash scripts/deploy.sh"
   },
   "devDependencies": {
     "turbo": "^2.0.0"
