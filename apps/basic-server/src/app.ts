@@ -13,6 +13,7 @@ import { requireUser } from '@/middleware/auth';
 import AppItemModel from '@/models/AppItem';
 import MemberAccountModel from '@/models/MemberAccount';
 import UserAppEntitlementModel from '@/models/UserAppEntitlement';
+import RedeemCodeModel from '@/models/RedeemCode';
 
 dotenv.config();
 
@@ -42,7 +43,8 @@ const buildMongoUri = () => {
 
 mongoose
   .connect(buildMongoUri())
-  .then(() => {
+  .then(async () => {
+    await RedeemCodeModel.init();
     console.log('MongoDB connected');
   })
   .catch((error) => {

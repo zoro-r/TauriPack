@@ -54,9 +54,17 @@ export interface RedeemPreviewResult {
 }
 
 const createRandomCode = (prefix?: string) => {
-  const code = crypto.randomBytes(5).toString('hex').toUpperCase();
+  const code = crypto.randomBytes(10).toString('hex').toUpperCase();
   const normalizedPrefix = prefix?.trim().toUpperCase();
   return normalizedPrefix ? `${normalizedPrefix}-${code}` : code;
+};
+
+const isDuplicateKeyError = (error: unknown) => {
+  const mongoError = error as { code?: number; writeErrors?: Array<{ code?: number }> };
+  return (
+    mongoError.code === 11000 ||
+    (Array.isArray(mongoError.writeErrors) && mongoError.writeErrors.length > 0 && mongoError.writeErrors.every((item) => item.code === 11000))
+  );
 };
 
 const buildOrderNo = () => `MB${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
@@ -183,27 +191,53 @@ export const generateRedeemCodes = async (batchId: string, count: number) => {
     throw new Error('batch not found');
   }
   const total = Math.max(Math.min(Number(count) || 0, 500), 1);
-  const docs = [];
-  const seen = new Set<string>();
+  // `unique: true` is only a schema declaration until MongoDB creates the index.
+  // Wait for it here so concurrent generation requests cannot persist a duplicate code.
+  await RedeemCodeModel.init();
 
-  while (docs.length < total) {
-    const code = createRandomCode(batch.codePrefix);
-    if (seen.has(code)) {
+  const created: Array<{ _id: unknown }> = [];
+  const maxAttempts = 10;
+
+  for (let attempt = 0; created.length < total && attempt < maxAttempts; attempt += 1) {
+    const candidates = new Set<string>();
+    const needed = total - created.length;
+    while (candidates.size < needed) {
+      candidates.add(createRandomCode(batch.codePrefix));
+    }
+
+    const existing = await RedeemCodeModel.find({ code: { $in: [...candidates] } }).select('code').lean();
+    const existingCodes = new Set(existing.map((item) => item.code));
+    const docs = [...candidates]
+      .filter((code) => !existingCodes.has(code))
+      .map((code) => ({
+        code,
+        batchId: batch._id,
+        status: 'unused' as const,
+        expiresAt: batch.expiresAt,
+        source: 'generated' as const
+      }));
+
+    if (!docs.length) {
       continue;
     }
-    seen.add(code);
-    docs.push({
-      code,
-      batchId: batch._id,
-      status: 'unused' as const,
-      expiresAt: batch.expiresAt,
-      source: 'generated' as const
-    });
+
+    try {
+      created.push(...(await RedeemCodeModel.insertMany(docs, { ordered: false })));
+    } catch (error) {
+      const insertError = error as { insertedDocs?: Array<{ _id: unknown }> };
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
+      // Unordered writes keep non-conflicting codes. Retry only the remainder.
+      created.push(...(insertError.insertedDocs || []));
+    }
   }
 
-  const created = await RedeemCodeModel.insertMany(docs);
-  batch.totalCount += created.length;
-  await batch.save();
+  if (created.length !== total) {
+    throw new Error('failed to generate unique redeem codes');
+  }
+
+  await RedeemBatchModel.updateOne({ _id: batch._id }, { $inc: { totalCount: created.length } });
   return created;
 };
 

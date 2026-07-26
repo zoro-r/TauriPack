@@ -169,6 +169,7 @@ const RedeemCodesPage: React.FC = () => {
   const [batchManageOpen, setBatchManageOpen] = useState(false);
   const [batchFormOpen, setBatchFormOpen] = useState(false);
   const [generateModalOpen, setGenerateModalOpen] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [editingBatch, setEditingBatch] = useState<RedeemBatchItem | null>(null);
   const [batchForm] = Form.useForm<BatchFormValues>();
   const [generateForm] = Form.useForm<{ batchId: string; count: number }>();
@@ -374,14 +375,20 @@ const RedeemCodesPage: React.FC = () => {
   };
 
   const submitGenerate = async () => {
-    const values = await generateForm.validateFields();
-    await request('/api/admin/redeem/codes/generate', {
-      method: 'POST',
-      data: values
-    });
-    messageApi.success('兑换码已生成');
-    setGenerateModalOpen(false);
-    await loadAll(filters, codePagination.current, codePagination.pageSize);
+    if (generating) return;
+    setGenerating(true);
+    try {
+      const values = await generateForm.validateFields();
+      await request('/api/admin/redeem/codes/generate', {
+        method: 'POST',
+        data: values
+      });
+      messageApi.success('兑换码已生成');
+      setGenerateModalOpen(false);
+      await loadAll(filters, codePagination.current, codePagination.pageSize);
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const batchColumns: ColumnsType<RedeemBatchItem> = [
@@ -687,6 +694,9 @@ const RedeemCodesPage: React.FC = () => {
         open={generateModalOpen}
         onCancel={() => setGenerateModalOpen(false)}
         onOk={submitGenerate}
+        confirmLoading={generating}
+        maskClosable={!generating}
+        closable={!generating}
         destroyOnClose
       >
         <Form form={generateForm} layout="vertical" initialValues={{ count: 10 }}>
