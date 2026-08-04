@@ -1,11 +1,14 @@
 import crypto from 'crypto';
 import http from 'http';
 import https from 'https';
+import mongoose from 'mongoose';
 import type { IncomingHttpHeaders } from 'http';
 import type { ServerResponse } from 'http';
 import type { UserDocument } from '@/models/User';
+import BillingTransactionModel from '@/models/BillingTransaction';
 import NewApiAccountModel from '@/models/NewApiAccount';
 import NewApiRechargeModel from '@/models/NewApiRecharge';
+import { rememberDocumentApiKey } from '@/services/documentService';
 
 interface NewApiConfig {
   baseUrl: string;
@@ -59,6 +62,7 @@ export interface NewApiTokenItem {
   createdAt?: string;
   expiredAt?: string;
   usedQuota: number;
+  documentUsedQuota?: number;
 }
 
 export interface CreatedNewApiTokenResult {
@@ -82,6 +86,11 @@ export interface NewApiWalletOverview {
 }
 
 export interface NewApiUsageItem { id: string; tokenId: string; model: string; tokenName: string; quota: number; createdAt?: string; }
+
+export interface NewApiQuotaChargeResult {
+  quota: number;
+  availableQuota: number;
+}
 
 interface NewApiRemoteUserSummary {
   id: string;
@@ -717,6 +726,26 @@ export const getNewApiWallet = async (userId: string): Promise<NewApiWalletOverv
   };
 };
 
+export const chargeNewApiQuota = async (input: { userId: string; quota: number }): Promise<NewApiQuotaChargeResult> => {
+  const quota = Math.floor(Number(input.quota));
+  if (!Number.isFinite(quota) || quota <= 0) throw new Error('扣除额度必须大于 0');
+
+  const account = await ensureProvisionedAccount(input.userId);
+  const remoteUser = await resolveRemoteUser({ userId: input.userId, remoteUserId: account.newApiUserId });
+  const self = await getNewApiSelf(input.userId, remoteUser.id);
+  const availableQuota = Math.max(0, Number(self?.quota || 0) - Number(self?.used_quota || self?.usedQuota || 0));
+  if (availableQuota < quota) throw new Error(`New-API 余额不足，本次解析需 ${quota} 额度`);
+
+  const response = await requestNewApiAsAdmin({
+    method: 'POST',
+    path: '/api/user/manage',
+    body: { id: Number(remoteUser.id), action: 'add_quota', mode: 'subtract', value: quota }
+  });
+  assertNewApiSuccess(response, '扣除 New-API 额度失败');
+  logNewApi('document.quotaCharge.success', { userId: input.userId, remoteUserId: remoteUser.id, quota });
+  return { quota, availableQuota: availableQuota - quota };
+};
+
 export const createNewApiRechargeOrder = async (userId: string, amount: number) => {
   const quotaPerYuan = Number(process.env.NEW_API_QUOTA_PER_YUAN || 0);
   const range = getCustomRechargeRange();
@@ -828,7 +857,25 @@ export const listNewApiKeys = async (userId: string): Promise<NewApiTokenItem[]>
     userId,
     count: list.length
   });
-  return list.map(normalizeTokenItem).filter((item: NewApiTokenItem) => item.id);
+  const tokens: NewApiTokenItem[] = list.map(normalizeTokenItem).filter((item: NewApiTokenItem) => item.id);
+  const documentUsage = await BillingTransactionModel.aggregate<{ _id: string; quota: number }>([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(userId),
+        businessType: 'document_parse',
+        currency: 'new_api_quota',
+        direction: 'debit',
+        status: 'succeeded',
+        apiKeyId: { $exists: true, $ne: '' }
+      }
+    },
+    { $group: { _id: '$apiKeyId', quota: { $sum: '$amount' } } }
+  ]);
+  const documentQuotaByKeyId = new Map(documentUsage.map((item: { _id: string; quota: number }) => [String(item._id), Number(item.quota || 0)]));
+  return tokens.map((item: NewApiTokenItem) => {
+    const documentUsedQuota = documentQuotaByKeyId.get(item.id) || 0;
+    return { ...item, documentUsedQuota };
+  });
 };
 
 export const createNewApiKey = async (
@@ -900,6 +947,7 @@ export const createNewApiKey = async (
     token = created;
   }
   const secret = (await getNewApiKeySecret(userId, token.id)).secret;
+  await rememberDocumentApiKey({ userId, keyId: token.id, secret, name: token.name });
   logNewApi('createKey.success', {
     userId,
     tokenId: token.id,
@@ -956,7 +1004,9 @@ export const getNewApiKeySecret = async (userId: string, keyId: string) => {
     throw new Error('服务未返回完整 API 密钥');
   }
   logNewApi('getKeySecret.success', { userId, keyId });
-  return { secret: secret.startsWith('sk-') ? secret : `sk-${secret}` };
+  const normalizedSecret = secret.startsWith('sk-') ? secret : `sk-${secret}`;
+  await rememberDocumentApiKey({ userId, keyId, secret: normalizedSecret });
+  return { secret: normalizedSecret };
 };
 
 export const relayNewApiChatCompletion = async (input: NewApiChatCompletionInput) => {

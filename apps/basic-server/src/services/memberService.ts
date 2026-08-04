@@ -7,6 +7,7 @@ import AppItemModel from '@/models/AppItem';
 import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategoryService';
 import { createNativeWechatPayOrder, queryWechatPayOrder } from '@/services/wechatPayService';
 import { createNewApiRechargeOrder, creditNewApiRecharge } from '@/services/newApiService';
+import { creditDocumentOrder, getDocumentRechargeOption } from '@/services/documentService';
 
 export interface MemberPlanInput {
   name: string;
@@ -37,6 +38,7 @@ const amountToCent = (amount: number) => Math.round(amount * 100);
 const buildOrderNo = () => `MB${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
 const buildRechargeOrderNo = () => `AR${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+const buildDocumentRechargeOrderNo = () => `DR${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
 const getForceOneFenUserIds = () =>
   String(process.env.MEMBER_PAY_FORCE_1FEN_USER_IDS || '')
@@ -190,6 +192,11 @@ const markOrderAsPaid = async (payload: {
       quota,
       remoteUserId
     });
+  }
+  if (order.orderType === 'service' && (order.snapshot as { service?: string } | undefined)?.service === 'document_credits') {
+    const credits = Number((order.snapshot as { credits?: number }).credits || 0);
+    if (!credits) throw new Error('文档解析充值订单缺少页数信息');
+    await creditDocumentOrder({ orderId: order._id.toString(), userId: order.userId.toString(), credits });
   }
   return order;
 };
@@ -416,6 +423,26 @@ export const createApiRechargeOrder = async (userId: string, amount: number) => 
   };
 };
 
+export const createDocumentCreditOrder = async (userId: string, amount: number) => {
+  const recharge = getDocumentRechargeOption(amount);
+  const orderNo = buildDocumentRechargeOrderNo();
+  const forceOneFen = shouldForceOneFen(userId);
+  const payableAmount = forceOneFen ? 0.01 : recharge.amount;
+  const codeUrl = await createNativeWechatPayOrder({
+    outTradeNo: orderNo,
+    description: `文档解析页数充值 ${recharge.credits} 页`,
+    amountCent: amountToCent(payableAmount)
+  });
+  const order = await MemberOrderModel.create({
+    orderNo, userId, orderType: 'service', amount: payableAmount, status: 'pending',
+    payChannel: 'wechat_native', wechatPrepayCodeUrl: codeUrl,
+    expiredAt: new Date(Date.now() + 30 * 60 * 1000), title: '文档解析页数充值',
+    description: `充值 ${recharge.credits} 页文档解析额度`,
+    snapshot: { service: 'document_credits', credits: recharge.credits, originalAmount: recharge.amount }
+  });
+  return { id: order._id.toString(), orderNo, amount: payableAmount, credits: recharge.credits, status: order.status, payChannel: order.payChannel, codeUrl };
+};
+
 export const getMemberOrderDetail = async (userId: string, orderId: string) => {
   const order = await MemberOrderModel.findOne({ _id: orderId, userId })
     .populate('planId', 'name code price durationDays')
@@ -449,6 +476,9 @@ export const syncMemberOrderStatus = async (userId: string, orderId: string) => 
         quota: Number(snapshot?.quota || 0),
         remoteUserId: String(snapshot?.remoteUserId || '')
       });
+    }
+    if (order.orderType === 'service' && (order.snapshot as { service?: string } | undefined)?.service === 'document_credits') {
+      await creditDocumentOrder({ orderId: order._id.toString(), userId: order.userId.toString(), credits: Number((order.snapshot as { credits?: number }).credits || 0) });
     }
     return getMemberOrderDetail(userId, orderId);
   }

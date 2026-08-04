@@ -34,6 +34,7 @@ interface NewApiTokenItem {
   createdAt?: string;
   expiredAt?: string;
   usedQuota: number;
+  documentUsedQuota?: number;
 }
 
 interface CreatedNewApiTokenResult {
@@ -51,6 +52,16 @@ interface ApiWallet {
   customRechargeMaxAmount: number;
 }
 interface UsageItem { id: string; tokenId: string; model: string; tokenName: string; quota: number; createdAt?: string; }
+interface DocumentConsumptionItem {
+  id: string;
+  jobId: string;
+  pages?: number;
+  quota: number;
+  status: 'pending' | 'processing' | 'succeeded' | 'failed';
+  error?: string;
+  createdAt: string;
+  completedAt?: string;
+}
 
 interface RechargeOrder {
   id: string;
@@ -96,6 +107,8 @@ const ApiKeysPage: React.FC = () => {
   const [rechargeOrders, setRechargeOrders] = useState<RechargeOrderItem[]>([]);
   const [usageItems, setUsageItems] = useState<UsageItem[]>([]);
   const [usageLoading, setUsageLoading] = useState(false);
+  const [documentConsumptions, setDocumentConsumptions] = useState<DocumentConsumptionItem[]>([]);
+  const [documentConsumptionsLoading, setDocumentConsumptionsLoading] = useState(false);
   const [keyUsageOpen, setKeyUsageOpen] = useState(false);
   const [selectedKey, setSelectedKey] = useState<NewApiTokenItem | null>(null);
   const [customAmount, setCustomAmount] = useState<number | null>(null);
@@ -216,14 +229,24 @@ const ApiKeysPage: React.FC = () => {
     if (!createdSecret) {
       return;
     }
+    await request('/api/documents/api-key-registration', {
+      method: 'POST',
+      data: { secret: createdSecret },
+      alert: false
+    });
     await navigator.clipboard.writeText(createdSecret);
     messageApi.success('密钥已复制');
   };
 
   const copyKey = async (id: string) => {
     const data = await request<{ secret: string }>(`/api/newapi/keys/${id}/secret`, { method: 'POST' });
+    await request('/api/documents/api-key-registration', {
+      method: 'POST',
+      data: { secret: data.secret },
+      alert: false
+    });
     await navigator.clipboard.writeText(data.secret);
-    messageApi.success('完整密钥已复制');
+    messageApi.success('完整密钥已复制，文档解析已启用');
   };
 
   const copyModelName = async (model: string) => {
@@ -254,13 +277,16 @@ const ApiKeysPage: React.FC = () => {
   const openRechargeOrders = async () => {
     setRechargeOrdersOpen(true);
     setRechargeOrdersLoading(true);
+    setDocumentConsumptionsLoading(true);
     try {
       const orders = await request<RechargeOrderItem[]>('/api/member/orders');
       setRechargeOrders(orders.filter((item) => item.orderType === 'recharge'));
       setUsageLoading(true);
       try { setUsageItems(await request<UsageItem[]>('/api/newapi/usage')); } finally { setUsageLoading(false); }
+      setDocumentConsumptions(await request<DocumentConsumptionItem[]>('/api/documents/consumptions'));
     } finally {
       setRechargeOrdersLoading(false);
+      setDocumentConsumptionsLoading(false);
     }
   };
 
@@ -297,7 +323,8 @@ const ApiKeysPage: React.FC = () => {
       dataIndex: 'maskedKey',
       render: (value: string, record) => <Space size={4}><Typography.Text code className="api-key-mask">{value}</Typography.Text><Tooltip title="复制完整密钥"><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyKey(record.id).catch(() => messageApi.error('复制失败'))} /></Tooltip></Space>
     },
-    { title: '消耗额度', dataIndex: 'usedQuota', render: (value: number) => value || 0 },
+    { title: '模型消耗', dataIndex: 'usedQuota', render: (value: number) => value || 0 },
+    { title: '文档消耗', dataIndex: 'documentUsedQuota', render: (value?: number) => value || 0 },
     {
       title: '操作',
       key: 'actions',
@@ -317,6 +344,7 @@ const ApiKeysPage: React.FC = () => {
     item.name.toLocaleLowerCase().includes(keySearch.trim().toLocaleLowerCase())
   );
   const chatCompletionsUrl = `${apiBase}/api/newapi/v1/chat/completions`;
+  const documentParseUrl = `${apiBase}/api/v1/documents/parse`;
 
   if (!currentUser?.id) {
     return (
@@ -475,7 +503,7 @@ const ApiKeysPage: React.FC = () => {
             { title: '到账额度', dataIndex: 'snapshot', render: (value?: RechargeOrderItem['snapshot']) => value?.quota ?? '--' },
             { title: '状态', dataIndex: 'status', render: (value: RechargeOrderItem['status']) => <Tag color={value === 'paid' ? 'green' : value === 'pending' ? 'orange' : 'default'}>{value === 'paid' ? '已支付' : value === 'pending' ? '待支付' : value === 'closed' ? '已关闭' : '已退款'}</Tag> },
             { title: '时间', dataIndex: 'paidAt', render: (value: string | undefined, record) => formatDateTime(value || record.createdAt) }
-          ]} locale={{ emptyText: <Empty description="暂无充值记录" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} /> }, { key: 'usage', label: '消费明细', children: <Table<UsageItem> rowKey="id" loading={usageLoading} pagination={false} dataSource={usageItems} columns={[{ title: '模型', dataIndex: 'model' }, { title: '密钥', dataIndex: 'tokenName' }, { title: '消耗额度', dataIndex: 'quota' }, { title: '时间', dataIndex: 'createdAt', render: (value?: string) => formatDateTime(value) }]} locale={{ emptyText: <Empty description="暂无消费记录" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} /> }]} />
+          ]} locale={{ emptyText: <Empty description="暂无充值记录" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} /> }, { key: 'usage', label: '消费明细', children: <Table<UsageItem> rowKey="id" loading={usageLoading} pagination={false} dataSource={usageItems} columns={[{ title: '模型', dataIndex: 'model' }, { title: '密钥', dataIndex: 'tokenName' }, { title: '消耗额度', dataIndex: 'quota' }, { title: '时间', dataIndex: 'createdAt', render: (value?: string) => formatDateTime(value) }]} locale={{ emptyText: <Empty description="暂无消费记录" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} /> }, { key: 'document', label: '文档消费', children: <Table<DocumentConsumptionItem> rowKey="id" loading={documentConsumptionsLoading} pagination={false} dataSource={documentConsumptions} columns={[{ title: '任务 ID', dataIndex: 'jobId', render: (value: string) => <Typography.Text code>{value}</Typography.Text> }, { title: '页数', dataIndex: 'pages', render: (value?: number) => value ?? '--' }, { title: '消耗额度', dataIndex: 'quota' }, { title: '状态', dataIndex: 'status', render: (value: DocumentConsumptionItem['status']) => <Tag color={value === 'succeeded' ? 'green' : value === 'failed' ? 'red' : 'orange'}>{value === 'succeeded' ? '已扣除' : value === 'failed' ? '扣除失败' : value === 'processing' ? '扣除中' : '待扣除'}</Tag> }, { title: '时间', dataIndex: 'completedAt', render: (value: string | undefined, record) => formatDateTime(value || record.createdAt) }]} locale={{ emptyText: <Empty description="暂无文档消费记录" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} /> }]} />
       </Modal>
 
       <Modal title={`${selectedKey?.name || ''} 消费明细`} open={keyUsageOpen} footer={<Button onClick={() => setKeyUsageOpen(false)}>关闭</Button>} onCancel={() => setKeyUsageOpen(false)} width={720}>
@@ -529,6 +557,44 @@ const ApiKeysPage: React.FC = () => {
                 {availableModels.length ? <Space wrap>{availableModels.map((model) => <Space key={model} size={2}><Tag>{model}</Tag><Tooltip title="复制模型名称"><Button type="text" size="small" aria-label={`复制 ${model}`} icon={<CopyOutlined />} onClick={() => copyModelName(model).catch(() => messageApi.error('复制失败'))} /></Tooltip></Space>)}</Space> : <Typography.Text type="secondary">暂无可用模型</Typography.Text>}
               </Spin>
             </div>
+          </div>
+          <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+            <Typography.Title level={5} style={{ margin: '0 0 8px' }}>文档解析 API</Typography.Title>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+              同一把 API Key 可用于文档解析。新建密钥会自动启用；已有密钥请在列表中点击一次“复制完整密钥”后再调用。解析成功后按实际页数从 API 账户余额扣除，每页 50,000 额度（约 ¥0.10）。
+            </Typography.Paragraph>
+            <Typography.Paragraph style={{ marginBottom: 8 }}>
+              <Typography.Text strong>提交解析任务</Typography.Text>
+            </Typography.Paragraph>
+            <Typography.Paragraph copyable={{ text: documentParseUrl }} code style={{ margin: '0 0 8px' }}>
+              {documentParseUrl}
+            </Typography.Paragraph>
+            <Input.TextArea
+              readOnly
+              autoSize={{ minRows: 10, maxRows: 14 }}
+              value={`curl -X POST ${documentParseUrl} \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://你的文件地址/文件名.pdf",
+    "modelVersion": "vlm"
+  }'`}
+            />
+            <Typography.Paragraph type="secondary" style={{ margin: '8px 0 12px' }}>
+              将 <Typography.Text code>YOUR_API_KEY</Typography.Text> 替换为创建的完整 API Key；将 <Typography.Text code>https://你的文件地址/文件名.pdf</Typography.Text> 替换为可直接访问的文件 HTTP 地址，解析服务会从该地址下载文件；<Typography.Text code>modelVersion=vlm</Typography.Text> 为解析模型，保持不变即可。支持 PDF、图片、Word、PPT、Excel，单文件最大 200MB。提交成功后会返回 <Typography.Text code>jobId</Typography.Text>。
+            </Typography.Paragraph>
+            <Typography.Paragraph style={{ marginBottom: 8 }}>
+              <Typography.Text strong>查询解析结果</Typography.Text>
+            </Typography.Paragraph>
+            <Input.TextArea
+              readOnly
+              autoSize={{ minRows: 3, maxRows: 6 }}
+              value={`curl ${apiBase}/api/v1/documents/jobs/解析接口返回的任务ID \\
+  -H "Authorization: Bearer YOUR_API_KEY"`}
+            />
+            <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+              将 <Typography.Text code>解析接口返回的任务ID</Typography.Text> 替换为提交解析接口返回的 <Typography.Text code>jobId</Typography.Text>，每隔几秒查询一次即可。任务完成时返回解析结果下载地址、实际页数和扣除额度；失败时返回错误原因。
+            </Typography.Paragraph>
           </div>
           <Alert type="warning" showIcon message="请勿在浏览器代码、公开仓库或截图中泄露完整 API 密钥。" />
         </Space>
