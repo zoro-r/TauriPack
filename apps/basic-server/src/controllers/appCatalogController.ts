@@ -3,7 +3,6 @@ import {
   assertMemberOwnsAppOrAdmin,
   authorizeMemberPackageUpload,
   canUserAccessApp,
-  countAppsOwnedByUser,
   createApp,
   createCategory,
   deleteApp,
@@ -11,7 +10,6 @@ import {
   getAppDetailForViewer,
   listAppsPaged,
   listCategories,
-  MEMBER_MAX_OWN_APPS,
   updateApp,
   updateCategory,
   type AppItemInput,
@@ -29,6 +27,7 @@ import { getBearerToken, requireAdmin, requireUser } from '@/middleware/auth';
 import UserModel from '@/models/User';
 import { verifyAccessToken } from '@/services/authService';
 import { isMemberActive } from '@/services/memberService';
+import { getMemberAppQuota } from '@/services/memberService';
 import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategoryService';
 import { error as errorResponse, success } from '@/utils/tool';
 
@@ -152,9 +151,9 @@ export const postApp = async (ctx: Router.RouterContext) => {
     if (!(await isMemberActive(user._id.toString()))) {
       throw new Error('需要有效会员身份');
     }
-    const owned = await countAppsOwnedByUser(user._id.toString());
-    if (owned >= MEMBER_MAX_OWN_APPS) {
-      throw new Error(`会员最多上架 ${MEMBER_MAX_OWN_APPS} 个应用`);
+    const quota = await getMemberAppQuota(user._id.toString());
+    if (quota.availableSlotCount <= 0) {
+      throw new Error('应用坑位已用完，请先购买坑位套餐');
     }
     const categoryId = await ensureMemberUploadCategoryId();
     ctx.body = success(

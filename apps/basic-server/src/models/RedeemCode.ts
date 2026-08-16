@@ -44,4 +44,20 @@ const RedeemCodeModel: Model<RedeemCodeDocument> =
   mongoose.models.RedeemCode ||
   mongoose.model<RedeemCodeDocument>('RedeemCode', redeemCodeSchema);
 
+export const ensureRedeemCodeUniqueIndex = async () => {
+  const indexes = await RedeemCodeModel.collection.listIndexes().toArray();
+  const codeIndex = indexes.find((index) => index.name === 'code_1');
+  if (codeIndex && !codeIndex.unique) {
+    await RedeemCodeModel.collection.dropIndex('code_1');
+  }
+  try {
+    await RedeemCodeModel.collection.createIndex({ code: 1 }, { name: 'code_1', unique: true });
+  } catch (error: any) {
+    if (error?.code === 11000) {
+      throw new Error('兑换码表存在历史重复兑换码，请先清理重复数据后再生成新兑换码');
+    }
+    throw error;
+  }
+};
+
 export default RedeemCodeModel;

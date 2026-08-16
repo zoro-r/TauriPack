@@ -117,6 +117,22 @@ export const postNewApiChatCompletion = async (ctx: Router.RouterContext) => {
   }
 };
 
+export const postNewApiImageGeneration = async (ctx: Router.RouterContext) => {
+  try {
+    ctx.respond = false;
+    await proxyNewApiOpenAiRequest({
+      method: 'POST',
+      path: '/v1/images/generations',
+      authorization: String(ctx.headers.authorization || ''),
+      body: ctx.request.body || {}
+    }, ctx.res);
+  } catch (err) {
+    ctx.respond = false;
+    ctx.res.writeHead(401, { 'Content-Type': 'application/json' });
+    ctx.res.end(JSON.stringify({ error: { message: err instanceof Error ? err.message : 'Image generation failed', type: 'invalid_request_error', param: null, code: null } }));
+  }
+};
+
 export const getNewApiOpenAiModels = async (ctx: Router.RouterContext) => {
   try {
     ctx.respond = false;

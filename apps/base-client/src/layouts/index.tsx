@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Avatar, Button, Dropdown, Form, Input, MenuProps, Modal, Space, Table, Tag, Typography, message } from 'antd';
+import { Avatar, Button, Dropdown, Form, Input, MenuProps, Modal, Space, Table, Tag, Tabs, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Outlet, history, useLocation } from '@umijs/max';
 import request from '../utils/request';
@@ -19,14 +19,6 @@ const defaultMenus: NavMenuItem[] = [{ key: 'apps', label: '应用广场', path:
 const plainLayoutPaths = ['/auth', '/forbidden', '/login', '/success'];
 const qrImageOf = (value: string) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(value)}`;
-const shouldUseDevLogin = () => {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-  const host = window.location.hostname.toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
-};
-
 interface MemberPlan {
   _id: string;
   name: string;
@@ -34,6 +26,9 @@ interface MemberPlan {
   price: number;
   originalPrice?: number;
   durationDays: number;
+  planType?: 'membership' | 'app_slot';
+  slotCount?: number;
+  purchaseLimit?: 'unlimited' | 'once';
   description?: string;
   isVisibleToUser?: boolean;
 }
@@ -44,6 +39,11 @@ interface MemberInfo {
   status: 'active' | 'expired';
   startedAt?: string;
   expiredAt?: string;
+  ownedAppCount?: number;
+  purchasedSlotCount?: number;
+  totalSlotCount?: number;
+  availableSlotCount?: number;
+  slotPackagePurchased?: boolean;
 }
 
 interface RedeemResult {
@@ -83,6 +83,7 @@ interface MemberOrderPayload {
   status: 'pending' | 'paid' | 'closed' | 'refunded';
   payChannel: 'wechat_native';
   codeUrl: string;
+  planType?: 'membership' | 'app_slot';
 }
 
 interface UserOrderItem {
@@ -138,6 +139,7 @@ const RootLayout: React.FC = () => {
   const [memberInfo, setMemberInfo] = useState<MemberInfo | null>(null);
   const [memberPlans, setMemberPlans] = useState<MemberPlan[]>([]);
   const [memberModalOpen, setMemberModalOpen] = useState(false);
+  const [memberPlanTab, setMemberPlanTab] = useState<'membership' | 'app_slot'>('membership');
   const [payingPlanCode, setPayingPlanCode] = useState('');
   const [memberOrder, setMemberOrder] = useState<MemberOrderPayload | null>(null);
   const [memberPayStatus, setMemberPayStatus] = useState('请选择会员套餐');
@@ -288,7 +290,7 @@ const RootLayout: React.FC = () => {
         if (order.status === 'paid') {
           stopped = true;
           window.clearInterval(timer);
-          setMemberPayStatus('支付成功，会员已到账');
+          setMemberPayStatus(memberOrder.planType === 'app_slot' ? '支付成功，坑位已到账' : '支付成功，会员已到账');
           await fetchMemberInfo().catch(() => undefined);
           return;
         }
@@ -312,26 +314,32 @@ const RootLayout: React.FC = () => {
     };
   }, [memberModalOpen, memberOrder, currentUser]);
 
-  const openMemberCenter = () => {
+  const openMemberCenter = (tab: 'membership' | 'app_slot' = 'membership') => {
     if (!currentUser) {
       handleLoginEntry();
       return;
     }
     setMemberModalOpen(true);
+    setMemberPlanTab(tab);
     setMemberOrder(null);
-    setMemberPayStatus('请选择会员套餐');
+    setMemberPayStatus(tab === 'app_slot' ? '请选择应用坑位套餐' : '请选择会员套餐');
     fetchMemberPlans().catch(() => undefined);
     fetchMemberInfo().catch(() => undefined);
   };
 
   const createMemberOrder = async (planCode: string) => {
+    const selectedPlan = memberPlans.find((plan) => plan.code === planCode);
+    if (selectedPlan?.planType === 'app_slot' && !memberInfo?.isMember) {
+      messageApi.info('请先开通会员，再购买应用坑位');
+      return;
+    }
     setPayingPlanCode(planCode);
     try {
       const order = await request<MemberOrderPayload>('/api/member/orders', {
         method: 'POST',
         data: { planCode }
       });
-      setMemberOrder(order);
+      setMemberOrder({ ...order, planType: order.planType || selectedPlan?.planType });
       setMemberPayStatus('请使用微信扫码完成支付');
     } catch (error) {
       setMemberPayStatus(error instanceof Error ? error.message : '创建会员订单失败');
@@ -343,14 +351,6 @@ const RootLayout: React.FC = () => {
   const handleLoginEntry = async () => {
     setLoginLoading(true);
     try {
-      if (shouldUseDevLogin()) {
-        await request('/api/auth/dev-login', {
-          method: 'POST',
-          alert: false
-        });
-        window.location.reload();
-        return;
-      }
       const data = await request<LoginStatePayload>('/api/auth/wechat/qr', { alert: false });
       setLoginState(data);
       setLoginStatusText('请使用微信扫码登录');
@@ -505,7 +505,7 @@ const RootLayout: React.FC = () => {
                 </div>
                 {currentUser ? (
                   <Space.Compact>
-                    <Button onClick={openMemberCenter}>
+                    <Button onClick={() => openMemberCenter('membership')}>
                       {memberInfo?.isMember ? '会员' : '开通会员'}
                     </Button>
                     <Dropdown
@@ -809,8 +809,27 @@ const RootLayout: React.FC = () => {
             </div>
           </div>
 
-          <div className="member-plan-list">
-            {memberPlans.map((plan) => (
+          {currentUser && currentUser.role !== 'admin' ? (
+            <div className="member-panel__subtitle">
+              应用坑位：{memberInfo?.ownedAppCount ?? 0} / {memberInfo?.totalSlotCount ?? 0}，剩余{' '}
+              {memberInfo?.availableSlotCount ?? 0} 个
+            </div>
+          ) : null}
+
+          <Tabs
+            activeKey={memberPlanTab}
+            onChange={(key) => {
+              const nextTab = key as 'membership' | 'app_slot';
+              setMemberPlanTab(nextTab);
+              setMemberOrder(null);
+              setMemberPayStatus(nextTab === 'app_slot' ? '请选择应用坑位套餐' : '请选择会员套餐');
+            }}
+            items={[{ key: 'membership', label: '会员套餐' }, { key: 'app_slot', label: '应用坑位' }]}
+          />
+          <div className={`member-plan-group ${memberPlanTab !== 'membership' ? 'is-hidden' : ''}`}>
+            <div className="member-plan-group__title">会员套餐</div>
+            <div className="member-plan-list">
+            {memberPlans.filter((plan) => plan.planType !== 'app_slot').map((plan) => (
               <div key={plan.code} className="member-plan-card">
                 <div className="member-plan-card__name">{plan.name}</div>
                 <div className="member-plan-card__price">
@@ -818,19 +837,51 @@ const RootLayout: React.FC = () => {
                   {plan.originalPrice ? <span>¥{plan.originalPrice}</span> : null}
                 </div>
                 <div className="member-plan-card__desc">
-                  {plan.description || `${plan.durationDays} 天会员时长`}
+                  {plan.description || `${plan.durationDays} 天会员有效期`}
                 </div>
                 <Button
                   type="primary"
                   htmlType="button"
                   block
                   loading={payingPlanCode === plan.code}
+                  disabled={plan.planType === 'app_slot' && memberInfo?.slotPackagePurchased}
                   onClick={() => createMemberOrder(plan.code)}
                 >
-                  立即开通
+                  {plan.planType === 'app_slot' && memberInfo?.slotPackagePurchased ? '已购买' : '立即开通'}
                 </Button>
               </div>
             ))}
+            </div>
+          </div>
+          <div className={`member-plan-group ${memberPlanTab !== 'app_slot' ? 'is-hidden' : ''}`}>
+            <div className="member-plan-group__title">应用坑位套餐</div>
+            <div className="member-plan-group__hint">会员自带 1 个免费坑位，购买后额外增加坑位，坑位永久有效。</div>
+            <div className="member-plan-list">
+            {memberPlans.filter((plan) => plan.planType === 'app_slot').map((plan) => (
+              <div key={plan.code} className="member-plan-card">
+                <div className="member-plan-card__name">{plan.name}</div>
+                <div className="member-plan-card__price">
+                  <strong>¥{plan.price}</strong>
+                  {plan.originalPrice ? <span>¥{plan.originalPrice}</span> : null}
+                </div>
+                <div className="member-plan-card__desc">{plan.description || `增加 ${plan.slotCount || 0} 个应用坑位`}</div>
+                <Button
+                  type="primary"
+                  htmlType="button"
+                  block
+                  loading={payingPlanCode === plan.code}
+                  disabled={!memberInfo?.isMember || (plan.code === 'app_slot_basic' && memberInfo?.slotPackagePurchased)}
+                  onClick={() => createMemberOrder(plan.code)}
+                >
+                  {!memberInfo?.isMember
+                    ? '需先开通会员'
+                    : plan.code === 'app_slot_basic' && memberInfo?.slotPackagePurchased
+                      ? '已购买'
+                      : '购买坑位'}
+                </Button>
+              </div>
+            ))}
+            </div>
           </div>
 
           <div className="member-pay-section">
@@ -839,17 +890,21 @@ const RootLayout: React.FC = () => {
               <Typography.Text type="secondary">{memberPayStatus}</Typography.Text>
             </div>
 
-            {memberPayStatus === '支付成功，会员已到账' ? (
+            {memberPayStatus === '支付成功，会员已到账' || memberPayStatus === '支付成功，坑位已到账' ? (
               <div className="member-pay-success">
                 <div className="member-pay-success__icon">✓</div>
                 <div className="member-pay-success__title">开通成功</div>
                 <div className="member-pay-success__desc">
-                  会员权益已立即到账，现在可以返回继续访问会员应用。
+                  {memberPayStatus === '支付成功，坑位已到账'
+                    ? '应用坑位已立即到账，现在可以继续上传应用。'
+                    : '会员权益已立即到账，现在可以返回继续访问会员应用。'}
                 </div>
                 <div className="member-pay-success__meta">
-                  {memberInfo?.expiredAt
-                    ? `当前会员有效期至 ${formatDateTime(memberInfo.expiredAt)}`
-                    : '会员状态已同步更新'}
+                  {memberPayStatus === '支付成功，坑位已到账'
+                    ? '基础坑位包已到账，永久有效'
+                    : memberInfo?.expiredAt
+                      ? `当前会员有效期至 ${formatDateTime(memberInfo.expiredAt)}`
+                      : '会员状态已同步更新'}
                 </div>
               </div>
             ) : memberOrder ? (

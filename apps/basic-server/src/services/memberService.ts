@@ -8,13 +8,17 @@ import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategorySer
 import { createNativeWechatPayOrder, queryWechatPayOrder } from '@/services/wechatPayService';
 import { createNewApiRechargeOrder, creditNewApiRecharge } from '@/services/newApiService';
 import { creditDocumentOrder, getDocumentRechargeOption } from '@/services/documentService';
+import type { MemberPlanPurchaseLimit, MemberPlanType } from '@/models/MemberPlan';
 
 export interface MemberPlanInput {
   name: string;
   code: string;
   price: number;
   originalPrice?: number;
-  durationDays: number;
+  durationDays?: number;
+  planType?: MemberPlanType;
+  slotCount?: number;
+  purchaseLimit?: MemberPlanPurchaseLimit;
   description?: string;
   isActive?: boolean;
   isVisibleToUser?: boolean;
@@ -27,9 +31,36 @@ const DEFAULT_PLANS = [
     code: 'yearly',
     price: 299,
     durationDays: 365,
+    planType: 'membership' as const,
+    slotCount: 1,
+    purchaseLimit: 'unlimited' as const,
     description: '年度会员服务',
     isVisibleToUser: true,
     sort: 1
+  },
+  {
+    name: '单个应用坑位',
+    code: 'app_slot_single',
+    price: 49,
+    durationDays: 0,
+    planType: 'app_slot' as const,
+    slotCount: 1,
+    purchaseLimit: 'unlimited' as const,
+    description: '增加 1 个应用坑位，可重复购买',
+    isVisibleToUser: true,
+    sort: 2
+  },
+  {
+    name: '基础坑位包',
+    code: 'app_slot_basic',
+    price: 129,
+    durationDays: 0,
+    planType: 'app_slot' as const,
+    slotCount: 3,
+    purchaseLimit: 'once' as const,
+    description: '额外增加 3 个应用坑位，每个用户限购一次',
+    isVisibleToUser: true,
+    sort: 3
   }
 ];
 
@@ -53,11 +84,23 @@ const payLog = (tag: string, payload: Record<string, unknown>) => {
 };
 
 const ensureDefaultPlans = async () => {
-  const count = await MemberPlanModel.countDocuments();
-  if (count > 0) {
-    return;
+  const legacy = await MemberPlanModel.findOne({ code: 'membership_yearly' });
+  if (legacy && !(await MemberPlanModel.exists({ code: 'yearly' }))) {
+    legacy.code = 'yearly';
+    legacy.price = 299;
+    legacy.durationDays = 365;
+    legacy.planType = 'membership';
+    legacy.slotCount = 1;
+    legacy.purchaseLimit = 'unlimited';
+    legacy.description = '年度会员服务';
+    legacy.isActive = true;
+    legacy.isVisibleToUser = true;
+    legacy.sort = 1;
+    await legacy.save();
   }
-  await MemberPlanModel.insertMany(DEFAULT_PLANS);
+  for (const item of DEFAULT_PLANS) {
+    await MemberPlanModel.updateOne({ code: item.code }, { $setOnInsert: item }, { upsert: true });
+  }
 };
 
 const normalizeMemberAccount = async (userId: string) => {
@@ -111,7 +154,12 @@ const grantMemberBenefit = async (orderId: string) => {
   const plan = order.planId as unknown as {
     durationDays: number;
     name: string;
+    planType?: MemberPlanType;
   };
+
+  if ((plan.planType || 'membership') === 'app_slot') {
+    return order;
+  }
 
   const account = await normalizeMemberAccount(order.userId.toString());
   const beforeExpiredAt = account?.expiredAt;
@@ -232,7 +280,10 @@ export const createMemberPlan = async (input: MemberPlanInput) => {
     code,
     price: Number(input.price),
     originalPrice: input.originalPrice !== undefined ? Number(input.originalPrice) : undefined,
-    durationDays: Number(input.durationDays),
+    durationDays: Number(input.durationDays ?? (input.planType === 'app_slot' ? 0 : 365)),
+    planType: input.planType || 'membership',
+    slotCount: Math.max(0, Number(input.slotCount || 0)),
+    purchaseLimit: input.purchaseLimit || 'unlimited',
     description: input.description?.trim(),
     isActive: typeof input.isActive === 'boolean' ? input.isActive : true,
     isVisibleToUser:
@@ -266,7 +317,10 @@ export const updateMemberPlan = async (id: string, input: MemberPlanInput) => {
     input.originalPrice !== undefined && input.originalPrice !== null
       ? Number(input.originalPrice)
       : undefined;
-  plan.durationDays = Number(input.durationDays);
+  plan.durationDays = Number(input.durationDays ?? (input.planType === 'app_slot' ? 0 : 365));
+  plan.planType = input.planType || plan.planType || 'membership';
+  plan.slotCount = Math.max(0, Number(input.slotCount ?? plan.slotCount ?? 0));
+  plan.purchaseLimit = input.purchaseLimit || plan.purchaseLimit || 'unlimited';
   plan.description = input.description?.trim();
   plan.isActive = typeof input.isActive === 'boolean' ? input.isActive : plan.isActive;
   plan.isVisibleToUser =
@@ -287,7 +341,7 @@ export const getMemberMe = async (userId: string) => {
 
   const memberUploadCategoryId = await ensureMemberUploadCategoryId();
 
-  const ownedAppCount = await AppItemModel.countDocuments({ ownerUserId: userId });
+  const quota = await getMemberAppQuota(userId);
 
   return {
     isMember: Boolean(account?.isMember && account?.status === 'active'),
@@ -297,7 +351,35 @@ export const getMemberMe = async (userId: string) => {
     expiredAt: account?.expiredAt,
     latestOrder,
     memberUploadCategoryId,
-    ownedAppCount
+    ownedAppCount: quota.usedSlotCount,
+    purchasedSlotCount: quota.purchasedSlotCount,
+    totalSlotCount: quota.totalSlotCount,
+    availableSlotCount: quota.availableSlotCount,
+    slotPackagePurchased: quota.slotPackagePurchased
+  };
+};
+
+export const getMemberAppQuota = async (userId: string) => {
+  const active = await isMemberActive(userId);
+  const orders = await MemberOrderModel.find({ userId, orderType: 'member', status: 'paid' })
+    .select('snapshot')
+    .lean();
+  const purchasedSlotCount = orders.reduce((total, order) => {
+    const snapshot = order.snapshot as { type?: string; slotCount?: number } | undefined;
+    return total + (snapshot?.type === 'app_slot' ? Math.max(0, Number(snapshot.slotCount || 0)) : 0);
+  }, 0);
+  const totalSlotCount = (active ? 1 : 0) + purchasedSlotCount;
+  const usedSlotCount = await AppItemModel.countDocuments({ ownerUserId: userId });
+  return {
+    isMember: active,
+    purchasedSlotCount,
+    totalSlotCount,
+    usedSlotCount,
+    availableSlotCount: Math.max(0, totalSlotCount - usedSlotCount),
+    slotPackagePurchased: orders.some((order) => {
+      const snapshot = order.snapshot as { type?: string; code?: string } | undefined;
+      return snapshot?.type === 'app_slot' && snapshot.code === 'app_slot_basic';
+    })
   };
 };
 
@@ -316,6 +398,36 @@ export const createMemberOrder = async (userId: string, planCode: string) => {
   const plan = await MemberPlanModel.findOne({ code: planCode, isActive: true });
   if (!plan) {
     throw new Error('plan not found');
+  }
+
+  const planType = plan.planType || 'membership';
+  const purchaseLimit = plan.purchaseLimit || 'unlimited';
+  if (planType === 'app_slot' && !(await isMemberActive(userId))) {
+    throw new Error('请先开通有效会员，再购买应用坑位');
+  }
+  const purchaseKey = planType === 'app_slot' && purchaseLimit === 'once' ? plan.code : undefined;
+  if (purchaseKey) {
+    const existingPaid = await MemberOrderModel.findOne({ userId, purchaseKey, status: 'paid' }).lean();
+    if (existingPaid) {
+      throw new Error('基础坑位包每个用户只能购买一次');
+    }
+    const existingPending = await MemberOrderModel.findOne({
+      userId,
+      purchaseKey,
+      status: 'pending',
+      expiredAt: { $gt: new Date() }
+    }).lean();
+    if (existingPending?.wechatPrepayCodeUrl) {
+      return {
+        id: existingPending._id.toString(),
+        orderNo: existingPending.orderNo,
+        amount: existingPending.amount,
+        status: existingPending.status,
+        payChannel: existingPending.payChannel,
+        codeUrl: existingPending.wechatPrepayCodeUrl,
+        planType
+      };
+    }
   }
 
   const orderNo = buildOrderNo();
@@ -354,8 +466,12 @@ export const createMemberOrder = async (userId: string, planCode: string) => {
       code: plan.code,
       price: plan.price,
       durationDays: plan.durationDays,
+      type: planType,
+      slotCount: plan.slotCount || 0,
+      purchaseLimit,
       description: plan.description
-    }
+    },
+    purchaseKey
   });
 
   payLog('order.create.success', {
@@ -373,7 +489,8 @@ export const createMemberOrder = async (userId: string, planCode: string) => {
     amount: order.amount,
     status: order.status,
     payChannel: order.payChannel,
-    codeUrl
+    codeUrl,
+    planType
   };
 };
 

@@ -344,6 +344,7 @@ const ApiKeysPage: React.FC = () => {
     item.name.toLocaleLowerCase().includes(keySearch.trim().toLocaleLowerCase())
   );
   const chatCompletionsUrl = `${apiBase}/api/newapi/v1/chat/completions`;
+  const imageGenerationsUrl = `${apiBase}/api/newapi/v1/images/generations`;
   const documentParseUrl = `${apiBase}/api/v1/documents/parse`;
 
   if (!currentUser?.id) {
@@ -550,6 +551,23 @@ const ApiKeysPage: React.FC = () => {
           <Typography.Text type="secondary">
             当前可用示例模型：<Typography.Text code>deepseek-v4-flash</Typography.Text>。可用模型会随渠道配置变化。
           </Typography.Text>
+          <div>
+            <Typography.Text strong>图片生成 API</Typography.Text>
+            <Typography.Paragraph copyable={{ text: imageGenerationsUrl }} code style={{ margin: '6px 0 8px' }}>
+              {imageGenerationsUrl}
+            </Typography.Paragraph>
+            <Input.TextArea
+              readOnly
+              autoSize={{ minRows: 8, maxRows: 12 }}
+              value={`curl -X POST ${imageGenerationsUrl || 'https://your-api-host/v1/images/generations'} \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -d '{
+    "model": "图片模型名称",
+    "prompt": "一只可爱的猫"
+  }'`}
+            />
+          </div>
           <div>
             <Typography.Text strong>可用模型</Typography.Text>
             <div style={{ marginTop: 8 }}>

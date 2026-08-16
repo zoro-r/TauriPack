@@ -20,6 +20,7 @@ export interface MemberOrderDocument extends Document {
   title: string;
   description: string;
   snapshot?: Record<string, unknown>;
+  purchaseKey?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -54,13 +55,18 @@ const memberOrderSchema = new Schema<MemberOrderDocument>(
     expiredAt: { type: Date, index: true },
     title: { type: String, required: true, trim: true },
     description: { type: String, required: true, trim: true },
-    snapshot: { type: Schema.Types.Mixed }
+    snapshot: { type: Schema.Types.Mixed },
+    purchaseKey: { type: String }
   },
   { timestamps: true }
 );
 
 memberOrderSchema.index({ userId: 1, createdAt: -1 });
 memberOrderSchema.index({ orderType: 1, bizId: 1, createdAt: -1 });
+memberOrderSchema.index(
+  { userId: 1, purchaseKey: 1 },
+  { unique: true, partialFilterExpression: { purchaseKey: { $exists: true }, status: 'paid' } }
+);
 
 const MemberOrderModel: Model<MemberOrderDocument> =
   mongoose.models.MemberOrder ||

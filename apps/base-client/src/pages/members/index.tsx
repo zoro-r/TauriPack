@@ -46,6 +46,9 @@ interface MemberPlanItem {
   price: number;
   originalPrice?: number;
   durationDays: number;
+  planType?: 'membership' | 'app_slot';
+  slotCount?: number;
+  purchaseLimit?: 'unlimited' | 'once';
   description?: string;
   isActive: boolean;
   isVisibleToUser: boolean;
@@ -58,6 +61,9 @@ interface MemberPlanFormValues {
   price: number;
   originalPrice?: number;
   durationDays: number;
+  planType: 'membership' | 'app_slot';
+  slotCount: number;
+  purchaseLimit: 'unlimited' | 'once';
   description?: string;
   isActive: boolean;
   isVisibleToUser: boolean;
@@ -195,6 +201,9 @@ const MembersPage: React.FC = () => {
       price: 299,
       originalPrice: undefined,
       durationDays: 365,
+      planType: 'membership',
+      slotCount: 1,
+      purchaseLimit: 'unlimited',
       description: '',
       isActive: true,
       isVisibleToUser: true,
@@ -211,6 +220,9 @@ const MembersPage: React.FC = () => {
       price: plan.price,
       originalPrice: plan.originalPrice,
       durationDays: plan.durationDays,
+      planType: plan.planType || 'membership',
+      slotCount: plan.slotCount || 0,
+      purchaseLimit: plan.purchaseLimit || 'unlimited',
       description: plan.description,
       isActive: plan.isActive,
       isVisibleToUser: plan.isVisibleToUser !== false,
@@ -315,6 +327,16 @@ const MembersPage: React.FC = () => {
       title: '时长',
       dataIndex: 'durationDays',
       render: (value: number) => `${value} 天`
+    },
+    {
+      title: '类型',
+      dataIndex: 'planType',
+      render: (value: MemberPlanItem['planType']) => (value === 'app_slot' ? '应用坑位' : '会员')
+    },
+    {
+      title: '坑位',
+      dataIndex: 'slotCount',
+      render: (value?: number) => value || 0
     },
     {
       title: '状态',
@@ -475,7 +497,16 @@ const MembersPage: React.FC = () => {
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item label="时长(天)" name="durationDays" rules={[{ required: true, message: '请输入时长' }]}>
-            <InputNumber min={1} style={{ width: '100%' }} />
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="套餐类型" name="planType" rules={[{ required: true }]}>
+            <Select options={[{ label: '会员', value: 'membership' }, { label: '应用坑位', value: 'app_slot' }]} />
+          </Form.Item>
+          <Form.Item label="坑位数量" name="slotCount" rules={[{ required: true }]}>
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="购买限制" name="purchaseLimit" rules={[{ required: true }]}>
+            <Select options={[{ label: '不限次数', value: 'unlimited' }, { label: '每人一次', value: 'once' }]} />
           </Form.Item>
           <Form.Item label="描述" name="description">
             <Input.TextArea rows={3} placeholder="套餐说明" />

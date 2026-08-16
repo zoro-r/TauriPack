@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import RedeemBatchModel, { type RedeemBatchStatus } from '@/models/RedeemBatch';
-import RedeemCodeModel from '@/models/RedeemCode';
+import RedeemCodeModel, { ensureRedeemCodeUniqueIndex } from '@/models/RedeemCode';
 import RedeemRecordModel from '@/models/RedeemRecord';
 import MemberPlanModel from '@/models/MemberPlan';
 import MemberAccountModel from '@/models/MemberAccount';
@@ -193,7 +193,7 @@ export const generateRedeemCodes = async (batchId: string, count: number) => {
   const total = Math.max(Math.min(Number(count) || 0, 500), 1);
   // `unique: true` is only a schema declaration until MongoDB creates the index.
   // Wait for it here so concurrent generation requests cannot persist a duplicate code.
-  await RedeemCodeModel.init();
+  await ensureRedeemCodeUniqueIndex();
 
   const created: Array<{ _id: unknown }> = [];
   const maxAttempts = 10;

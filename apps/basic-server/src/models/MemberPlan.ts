@@ -1,11 +1,17 @@
 import mongoose, { Schema, type Document, type Model } from 'mongoose';
 
+export type MemberPlanType = 'membership' | 'app_slot';
+export type MemberPlanPurchaseLimit = 'unlimited' | 'once';
+
 export interface MemberPlanDocument extends Document {
   name: string;
   code: string;
   price: number;
   originalPrice?: number;
   durationDays: number;
+  planType: MemberPlanType;
+  slotCount: number;
+  purchaseLimit: MemberPlanPurchaseLimit;
   description?: string;
   isActive: boolean;
   isVisibleToUser: boolean;
@@ -20,7 +26,10 @@ const memberPlanSchema = new Schema<MemberPlanDocument>(
     code: { type: String, required: true, unique: true, index: true, trim: true },
     price: { type: Number, required: true, min: 0 },
     originalPrice: { type: Number, min: 0 },
-    durationDays: { type: Number, required: true, min: 1 },
+    durationDays: { type: Number, required: true, min: 0 },
+    planType: { type: String, enum: ['membership', 'app_slot'], default: 'membership', index: true },
+    slotCount: { type: Number, default: 0, min: 0 },
+    purchaseLimit: { type: String, enum: ['unlimited', 'once'], default: 'unlimited' },
     description: { type: String, trim: true },
     isActive: { type: Boolean, default: true, index: true },
     isVisibleToUser: { type: Boolean, default: true, index: true },

@@ -1427,6 +1427,27 @@
   gap: 14px;
 }
 
+.member-plan-group + .member-plan-group {
+  margin-top: 24px;
+}
+
+.member-plan-group.is-hidden {
+  display: none;
+}
+
+.member-plan-group__title {
+  margin-bottom: 10px;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.member-plan-group__hint {
+  margin: -2px 0 12px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
 .member-plan-card {
   padding: 18px;
   border: 1px solid #e8ecf2;

@@ -4,7 +4,7 @@ import path from 'path';
 import AppCategoryModel from '@/models/AppCategory';
 import AppItemModel from '@/models/AppItem';
 import UserAppEntitlementModel from '@/models/UserAppEntitlement';
-import { isMemberActive } from '@/services/memberService';
+import { getMemberAppQuota, isMemberActive } from '@/services/memberService';
 import { MEMBER_UPLOAD_CATEGORY_SLUG } from '@/services/memberUploadCategoryService';
 
 /** 会员自助上架数量上限（写死；后续可改为配额表） */
@@ -373,9 +373,9 @@ export const authorizeMemberPackageUpload = async (params: {
     }
     return;
   }
-  const owned = await countAppsOwnedByUser(params.userId);
-  if (owned >= MEMBER_MAX_OWN_APPS) {
-    throw new Error(`会员最多上架 ${MEMBER_MAX_OWN_APPS} 个应用`);
+  const quota = await getMemberAppQuota(params.userId);
+  if (quota.availableSlotCount <= 0) {
+    throw new Error('应用坑位已用完，请先购买坑位套餐');
   }
 };
 
