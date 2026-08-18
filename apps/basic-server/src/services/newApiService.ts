@@ -117,7 +117,10 @@ const logNewApiError = (event: string, error: unknown, payload?: Record<string, 
 };
 
 const managedSessionCache = new Map<string, ManagedSessionCacheEntry>();
+const managedSessionInflight = new Map<string, Promise<string>>();
+const managedSessionRateLimitUntil = new Map<string, number>();
 const MANAGED_SESSION_CACHE_TTL_MS = 10 * 60 * 1000;
+const MANAGED_SESSION_RATE_LIMIT_COOLDOWN_MS = 30 * 1000;
 
 const getRequiredEnv = (key: string) => {
   const value = process.env[key];
@@ -409,34 +412,59 @@ const loginManagedUserSession = async (userId: string, remoteUserId: string) => 
     logNewApi('loginManagedUserSession.cacheHit', { userId, remoteUserId, username });
     return cached.cookie;
   }
-  logNewApi('loginManagedUserSession.start', { userId, remoteUserId, username });
-  const response = await requestNewApi<any>({
-    method: 'POST',
-    path: '/api/user/login',
-    body: {
-      username,
-      password: buildManagedPassword(userId)
-    }
-  });
-  if (response.statusCode === 429) {
+
+  const rateLimitUntil = managedSessionRateLimitUntil.get(userId) || 0;
+  if (rateLimitUntil > Date.now()) {
     throw new Error('API 账户登录过于频繁，请稍后重试');
   }
-  assertNewApiSuccess(response, '登录 new-api 托管用户失败');
-  const cookie = toCookieHeader(response.headers['set-cookie']);
-  if (!cookie) {
-    throw new Error('new-api 登录成功但未返回会话 Cookie');
+
+  const inflight = managedSessionInflight.get(userId);
+  if (inflight) {
+    logNewApi('loginManagedUserSession.join', { userId, remoteUserId, username });
+    return inflight;
   }
-  logNewApi('loginManagedUserSession.success', {
-    userId,
-    remoteUserId,
-    username,
-    cookieLength: cookie.length
-  });
-  managedSessionCache.set(userId, {
-    cookie,
-    expiresAt: Date.now() + MANAGED_SESSION_CACHE_TTL_MS
-  });
-  return cookie;
+
+  const loginPromise = (async () => {
+    logNewApi('loginManagedUserSession.start', { userId, remoteUserId, username });
+    const response = await requestNewApi<any>({
+      method: 'POST',
+      path: '/api/user/login',
+      body: {
+        username,
+        password: buildManagedPassword(userId)
+      }
+    });
+    if (response.statusCode === 429) {
+      managedSessionRateLimitUntil.set(userId, Date.now() + MANAGED_SESSION_RATE_LIMIT_COOLDOWN_MS);
+      throw new Error('API 账户登录过于频繁，请稍后重试');
+    }
+    assertNewApiSuccess(response, '登录 new-api 托管用户失败');
+    const cookie = toCookieHeader(response.headers['set-cookie']);
+    if (!cookie) {
+      throw new Error('new-api 登录成功但未返回会话 Cookie');
+    }
+    logNewApi('loginManagedUserSession.success', {
+      userId,
+      remoteUserId,
+      username,
+      cookieLength: cookie.length
+    });
+    managedSessionRateLimitUntil.delete(userId);
+    managedSessionCache.set(userId, {
+      cookie,
+      expiresAt: Date.now() + MANAGED_SESSION_CACHE_TTL_MS
+    });
+    return cookie;
+  })();
+
+  managedSessionInflight.set(userId, loginPromise);
+  try {
+    return await loginPromise;
+  } finally {
+    if (managedSessionInflight.get(userId) === loginPromise) {
+      managedSessionInflight.delete(userId);
+    }
+  }
 };
 
 const requestNewApiInUserContext = async <T>(
