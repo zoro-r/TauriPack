@@ -119,8 +119,21 @@ const logNewApiError = (event: string, error: unknown, payload?: Record<string, 
 const managedSessionCache = new Map<string, ManagedSessionCacheEntry>();
 const managedSessionInflight = new Map<string, Promise<string>>();
 const managedSessionRateLimitUntil = new Map<string, number>();
-const MANAGED_SESSION_CACHE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_MANAGED_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
+const MIN_MANAGED_SESSION_CACHE_TTL_MS = 60 * 1000;
+const MAX_MANAGED_SESSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const MANAGED_SESSION_RATE_LIMIT_COOLDOWN_MS = 30 * 1000;
+
+const getManagedSessionCacheTtlMs = () => {
+  const configuredTtl = Number(process.env.NEW_API_MANAGED_SESSION_CACHE_TTL_MS);
+  if (!Number.isFinite(configuredTtl)) {
+    return DEFAULT_MANAGED_SESSION_CACHE_TTL_MS;
+  }
+  return Math.min(
+    MAX_MANAGED_SESSION_CACHE_TTL_MS,
+    Math.max(MIN_MANAGED_SESSION_CACHE_TTL_MS, configuredTtl)
+  );
+};
 
 const getRequiredEnv = (key: string) => {
   const value = process.env[key];
@@ -452,7 +465,7 @@ const loginManagedUserSession = async (userId: string, remoteUserId: string) => 
     managedSessionRateLimitUntil.delete(userId);
     managedSessionCache.set(userId, {
       cookie,
-      expiresAt: Date.now() + MANAGED_SESSION_CACHE_TTL_MS
+      expiresAt: Date.now() + getManagedSessionCacheTtlMs()
     });
     return cookie;
   })();
@@ -481,6 +494,22 @@ const requestNewApiInUserContext = async <T>(
   if (response.statusCode === 401) {
     // The remote session may have expired before its local cache TTL.
     managedSessionCache.delete(userId);
+    logNewApi('requestNewApiInUserContext.retryAfterUnauthorized', {
+      userId,
+      remoteUserId,
+      method: options.method,
+      path: options.path
+    });
+    const refreshedCookie = await loginManagedUserSession(userId, remoteUserId);
+    const retryResponse = await requestNewApi<T>({
+      ...options,
+      newApiUser: remoteUserId,
+      cookie: refreshedCookie
+    });
+    if (retryResponse.statusCode === 401) {
+      managedSessionCache.delete(userId);
+    }
+    return retryResponse;
   }
   return response;
 };
