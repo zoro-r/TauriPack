@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "HOST=127.0.0.1 PORT=5174 max dev",
+    "dev": "cross-env HOST=127.0.0.1 PORT=5174 max dev",
     "build": "max build"
   },
   "dependencies": {
@@ -14,5 +14,8 @@
     "dayjs": "^1.11.13",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
   }
 }

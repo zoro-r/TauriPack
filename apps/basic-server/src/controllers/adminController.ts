@@ -84,7 +84,19 @@ export const getAdminOrder = async (ctx: Router.RouterContext) => {
 export const postAdminOrderSync = async (ctx: Router.RouterContext) => {
   try {
     await requireAdmin(ctx);
-    ctx.body = success(await syncAdminOrder(String(ctx.params.id || '')), 'order synced');
+    const body = (ctx.request.body || {}) as {
+      rechargeResolution?: 'credited' | 'not_credited';
+    };
+    if (body.rechargeResolution && !['credited', 'not_credited'].includes(body.rechargeResolution)) {
+      ctx.body = fail('rechargeResolution must be credited or not_credited');
+      return;
+    }
+    ctx.body = success(
+      await syncAdminOrder(String(ctx.params.id || ''), {
+        rechargeResolution: body.rechargeResolution
+      }),
+      'order synced'
+    );
   } catch (err) {
     ctx.body = errorResponse('sync order failed', err);
   }

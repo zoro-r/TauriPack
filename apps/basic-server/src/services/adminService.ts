@@ -3,6 +3,7 @@ import UserModel from '@/models/User';
 import MemberAccountModel from '@/models/MemberAccount';
 import MemberOrderModel from '@/models/MemberOrder';
 import { syncMemberOrderStatus } from '@/services/memberService';
+import { reconcileNewApiRecharge, type RechargeReconciliation } from '@/services/newApiService';
 
 export interface AdminListQuery {
   keyword?: string;
@@ -207,7 +208,10 @@ export const getAdminOrderDetail = async (id: string) => {
   return order;
 };
 
-export const syncAdminOrder = async (id: string) => {
+export const syncAdminOrder = async (
+  id: string,
+  options: { rechargeResolution?: RechargeReconciliation } = {}
+) => {
   ensureObjectId(id, 'orderId');
   const order = await MemberOrderModel.findById(id).lean();
   if (!order) {
@@ -216,5 +220,19 @@ export const syncAdminOrder = async (id: string) => {
   if (order.payChannel !== 'wechat_native') {
     return getAdminOrderDetail(id);
   }
+
+  if (options.rechargeResolution) {
+    if (order.orderType !== 'recharge' || order.status !== 'paid') {
+      throw new Error('只有已支付的充值订单可以进行入账核对');
+    }
+    await reconcileNewApiRecharge({
+      orderId: id,
+      resolution: options.rechargeResolution
+    });
+    if (options.rechargeResolution === 'credited') {
+      return getAdminOrderDetail(id);
+    }
+  }
+
   return syncMemberOrderStatus(order.userId.toString(), id);
 };

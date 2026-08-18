@@ -805,6 +805,42 @@ export const creditNewApiRecharge = async (input: {
     logNewApi('wallet.credit.idempotent', { orderId: input.orderId, userId: input.userId, quota: recharge.quota });
     return recharge;
   }
+
+  const configuredCreditingTimeoutMs = Number(process.env.NEW_API_RECHARGE_CREDITING_TIMEOUT_MS);
+  const creditingTimeoutMs = Number.isFinite(configuredCreditingTimeoutMs)
+    ? Math.max(60_000, configuredCreditingTimeoutMs)
+    : 10 * 60 * 1000;
+  if (recharge.status === 'crediting') {
+    const creditingStartedAt = recharge.updatedAt.getTime();
+    if (Date.now() - creditingStartedAt < creditingTimeoutMs) {
+      throw new Error('充值正在处理中');
+    }
+
+    const recoveredRecharge = await NewApiRechargeModel.findOneAndUpdate(
+      {
+        _id: recharge._id,
+        status: 'crediting',
+        updatedAt: { $lte: new Date(Date.now() - creditingTimeoutMs) }
+      },
+      {
+        $set: {
+          status: 'failed',
+          error: '充值入账超时，已由订单同步自动恢复'
+        }
+      },
+      { new: true }
+    );
+    if (!recoveredRecharge) {
+      throw new Error('充值正在处理中');
+    }
+    recharge = recoveredRecharge;
+    logNewApi('wallet.credit.timeoutRecovered', {
+      orderId: input.orderId,
+      userId: input.userId,
+      timeoutMs: creditingTimeoutMs
+    });
+  }
+
   const lockedRecharge = await NewApiRechargeModel.findOneAndUpdate(
     { _id: recharge._id, status: { $in: ['pending', 'failed'] } },
     { $set: { status: 'crediting', error: undefined } },
@@ -835,6 +871,41 @@ export const creditNewApiRecharge = async (input: {
     logNewApiError('wallet.credit.failed', error, { orderId: input.orderId, userId: input.userId, quota: recharge.quota });
     throw error;
   }
+};
+
+export type RechargeReconciliation = 'credited' | 'not_credited';
+
+/**
+ * Reconciles an interrupted recharge only after an administrator has checked
+ * the remote New-API balance. This must not be inferred automatically because
+ * the remote quota update may have succeeded before this service stopped.
+ */
+export const reconcileNewApiRecharge = async (input: {
+  orderId: string;
+  resolution: RechargeReconciliation;
+}) => {
+  const recharge = await NewApiRechargeModel.findOne({ orderId: input.orderId });
+  if (!recharge) {
+    throw new Error('未找到充值入账记录');
+  }
+  if (recharge.status !== 'crediting') {
+    throw new Error(`当前充值入账状态为 ${recharge.status}，无需人工核对`);
+  }
+
+  if (input.resolution === 'credited') {
+    recharge.status = 'credited';
+    recharge.creditedAt = new Date();
+    recharge.error = undefined;
+    await recharge.save();
+    logNewApi('wallet.credit.reconciled', { orderId: input.orderId, resolution: input.resolution });
+    return recharge;
+  }
+
+  recharge.status = 'failed';
+  recharge.error = '管理员核对远端额度后确认未入账，允许重新执行';
+  await recharge.save();
+  logNewApi('wallet.credit.reconciled', { orderId: input.orderId, resolution: input.resolution });
+  return recharge;
 };
 
 export const listNewApiKeys = async (userId: string): Promise<NewApiTokenItem[]> => {

@@ -27,6 +27,15 @@ const isAuthErrorMessage = (value?: string) =>
 const shouldBypassAuthRecovery = (url: string) =>
   AUTH_REFRESH_BYPASS_URLS.includes(url);
 
+const getApiErrorMessage = (payload: { message?: unknown; error?: unknown }) => {
+  const messageText = typeof payload.message === 'string' ? payload.message : '';
+  const detailText = typeof payload.error === 'string' ? payload.error : '';
+  if (messageText && detailText && messageText !== detailText) {
+    return `${messageText}: ${detailText}`;
+  }
+  return messageText || detailText || '请求失败';
+};
+
 const logoutBySessionInvalid = (errorMessage?: string) => {
   clearAuthStorage();
   if (errorMessage) {
@@ -91,14 +100,13 @@ export default function request<T = any>(url: string, options: RequestOptions = 
     .then((res) => {
       const payload = res.data;
       if (payload && typeof payload === 'object') {
-        const { code, success, message: msg } = payload as {
+        const { code, success } = payload as {
           code?: number;
           success?: boolean;
-          message?: string;
         };
         const isSuccess = success === true || code === 200 || code === undefined;
         if (!isSuccess) {
-          const errorMessage = msg || '请求失败';
+          const errorMessage = getApiErrorMessage(payload);
           if (
             !shouldBypassAuthRecovery(url) &&
             url !== '/api/auth/refresh' &&
@@ -117,8 +125,7 @@ export default function request<T = any>(url: string, options: RequestOptions = 
                     retryPayload.code === 200 ||
                     retryPayload.code === undefined;
                   if (!retrySuccess) {
-                    const retryErrorMessage = retryPayload.message || '请求失败';
-                    if (alert) message.error(retryErrorMessage);
+                    const retryErrorMessage = getApiErrorMessage(retryPayload);
                     return Promise.reject(new Error(retryErrorMessage));
                   }
                   return (retryPayload.data ?? retryPayload) as T;
@@ -127,7 +134,6 @@ export default function request<T = any>(url: string, options: RequestOptions = 
               });
             });
           }
-          if (alert) message.error(errorMessage);
           return Promise.reject(new Error(errorMessage));
         }
         return (payload.data ?? payload) as T;

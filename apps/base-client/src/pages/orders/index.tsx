@@ -159,7 +159,8 @@ const OrdersPage: React.FC = () => {
     setSyncingOrderId(order._id);
     try {
       await request(`/api/admin/member/orders/${order._id}/sync`, {
-        method: 'POST'
+        method: 'POST',
+        alert: false
       });
       messageApi.success('订单状态已同步');
       if (selectedOrder?._id === order._id) {
@@ -167,6 +168,8 @@ const OrdersPage: React.FC = () => {
         setSelectedOrder(detail);
       }
       await loadOrders(filters, listPagination.current, listPagination.pageSize);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '订单状态同步失败');
     } finally {
       setSyncingOrderId(undefined);
     }
