@@ -1160,6 +1160,9 @@ export const proxyNewApiOpenAiRequest = async (input: {
   path: string;
   authorization: string;
   body?: unknown;
+  rawBody?: NodeJS.ReadableStream;
+  contentType?: string;
+  contentLength?: string;
 }, output: ServerResponse) => {
   const token = String(input.authorization || '').replace(/^Bearer\s+/i, '').trim();
   if (!token) {
@@ -1167,13 +1170,18 @@ export const proxyNewApiOpenAiRequest = async (input: {
   }
   const config = getConfig();
   const url = new URL(input.path, `${config.baseUrl}/`);
-  const bodyText = input.body === undefined ? '' : JSON.stringify(input.body);
+  const bodyText = input.rawBody || input.body === undefined ? '' : JSON.stringify(input.body);
   await new Promise<void>((resolve, reject) => {
     const requestOptions = {
       method: input.method,
       headers: {
         Accept: 'application/json, text/event-stream',
-        ...(bodyText ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyText) } : {}),
+        ...(input.rawBody
+          ? {
+              ...(input.contentType ? { 'Content-Type': input.contentType } : {}),
+              ...(input.contentLength ? { 'Content-Length': input.contentLength } : {})
+            }
+          : bodyText ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyText) } : {}),
         Authorization: `Bearer ${token}`
       }
     };
@@ -1187,9 +1195,14 @@ export const proxyNewApiOpenAiRequest = async (input: {
           output.writeHead(response.statusCode || 502, response.headers);
           response.pipe(output);
           response.on('end', resolve);
-        });
+    });
     proxyRequest.on('error', reject);
-    if (bodyText) proxyRequest.write(bodyText);
-    proxyRequest.end();
+    if (input.rawBody) {
+      input.rawBody.on('error', reject);
+      input.rawBody.pipe(proxyRequest);
+    } else {
+      if (bodyText) proxyRequest.write(bodyText);
+      proxyRequest.end();
+    }
   });
 };

@@ -133,6 +133,29 @@ export const postNewApiImageGeneration = async (ctx: Router.RouterContext) => {
   }
 };
 
+export const postNewApiImageEdit = async (ctx: Router.RouterContext) => {
+  try {
+    ctx.respond = false;
+    const isMultipart = ctx.is('multipart/*');
+    await proxyNewApiOpenAiRequest({
+      method: 'POST',
+      path: '/v1/images/edits',
+      authorization: String(ctx.headers.authorization || ''),
+      ...(isMultipart
+        ? {
+            rawBody: ctx.req,
+            contentType: String(ctx.headers['content-type'] || ''),
+            contentLength: String(ctx.headers['content-length'] || '')
+          }
+        : { body: ctx.request.body || {} })
+    }, ctx.res);
+  } catch (err) {
+    ctx.respond = false;
+    ctx.res.writeHead(401, { 'Content-Type': 'application/json' });
+    ctx.res.end(JSON.stringify({ error: { message: err instanceof Error ? err.message : 'Image edit failed', type: 'invalid_request_error', param: null, code: null } }));
+  }
+};
+
 export const getNewApiOpenAiModels = async (ctx: Router.RouterContext) => {
   try {
     ctx.respond = false;

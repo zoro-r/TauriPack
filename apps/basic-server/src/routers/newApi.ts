@@ -12,6 +12,7 @@ import {
   postNewApiKeySecret,
   postNewApiChatCompletion,
   postNewApiImageGeneration,
+  postNewApiImageEdit,
   getNewApiOpenAiModels
 } from '@/controllers/newApiController';
 
@@ -27,6 +28,7 @@ export default function newApiRouter(router: Router) {
   router.post('/api/newapi/keys/:id/secret', postNewApiKeySecret);
   router.post('/api/newapi/v1/chat/completions', postNewApiChatCompletion);
   router.post('/api/newapi/v1/images/generations', postNewApiImageGeneration);
+  router.post('/api/newapi/v1/images/edits', postNewApiImageEdit);
   router.get('/api/newapi/v1/models', getNewApiOpenAiModels);
   router.delete('/api/newapi/keys/:id', deleteNewApiKeyById);
 }

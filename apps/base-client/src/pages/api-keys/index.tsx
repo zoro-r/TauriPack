@@ -100,6 +100,7 @@ const ApiKeysPage: React.FC = () => {
   const [rechargeLoading, setRechargeLoading] = useState(false);
   const [keySearch, setKeySearch] = useState('');
   const [usageGuideOpen, setUsageGuideOpen] = useState(false);
+  const [usageGuideTab, setUsageGuideTab] = useState('chat');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [rechargeOrdersOpen, setRechargeOrdersOpen] = useState(false);
@@ -291,6 +292,7 @@ const ApiKeysPage: React.FC = () => {
   };
 
   const openUsageGuide = async () => {
+    setUsageGuideTab('chat');
     setUsageGuideOpen(true);
     setModelsLoading(true);
     try { setAvailableModels(await request<string[]>('/api/newapi/models')); } finally { setModelsLoading(false); }
@@ -345,6 +347,7 @@ const ApiKeysPage: React.FC = () => {
   );
   const chatCompletionsUrl = `${apiBase}/api/newapi/v1/chat/completions`;
   const imageGenerationsUrl = `${apiBase}/api/newapi/v1/images/generations`;
+  const imageEditsUrl = `${apiBase}/api/newapi/v1/images/edits`;
   const documentParseUrl = `${apiBase}/api/v1/documents/parse`;
 
   if (!currentUser?.id) {
@@ -517,8 +520,20 @@ const ApiKeysPage: React.FC = () => {
         footer={<Button onClick={() => setUsageGuideOpen(false)}>关闭</Button>}
         onCancel={() => setUsageGuideOpen(false)}
         width={760}
+        className="api-usage-guide-modal"
       >
+        <Tabs
+          activeKey={usageGuideTab}
+          onChange={setUsageGuideTab}
+          items={[
+            { key: 'chat', label: '对话调用' },
+            { key: 'image', label: '图片生成' },
+            { key: 'document', label: '文档解析' },
+            { key: 'models', label: '可用模型' }
+          ]}
+        />
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {usageGuideTab === 'chat' && <>
           <Typography.Paragraph style={{ margin: 0 }}>
             创建 API 密钥后，在请求头中携带该密钥即可调用兼容 OpenAI 的接口。
           </Typography.Paragraph>
@@ -551,6 +566,8 @@ const ApiKeysPage: React.FC = () => {
           <Typography.Text type="secondary">
             当前可用示例模型：<Typography.Text code>deepseek-v4-flash</Typography.Text>。可用模型会随渠道配置变化。
           </Typography.Text>
+          </>}
+          {usageGuideTab === 'image' && <>
           <div>
             <Typography.Text strong>图片生成 API</Typography.Text>
             <Typography.Paragraph copyable={{ text: imageGenerationsUrl }} code style={{ margin: '6px 0 8px' }}>
@@ -569,6 +586,26 @@ const ApiKeysPage: React.FC = () => {
             />
           </div>
           <div>
+            <Typography.Text strong>图片编辑 API</Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ margin: '6px 0 8px' }}>
+              使用 <Typography.Text code>multipart/form-data</Typography.Text> 上传原图，并通过提示词描述需要修改的内容。
+            </Typography.Paragraph>
+            <Typography.Paragraph copyable={{ text: imageEditsUrl }} code style={{ margin: '0 0 8px' }}>
+              {imageEditsUrl}
+            </Typography.Paragraph>
+            <Input.TextArea
+              readOnly
+              autoSize={{ minRows: 7, maxRows: 11 }}
+              value={`curl -X POST ${imageEditsUrl || 'https://your-api-host/v1/images/edits'} \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -F "image=@/本地图片路径/原图.png" \\
+  -F "model=图片模型名称" \\
+  -F "prompt=把图片背景改成海边"`}
+            />
+          </div>
+          </>}
+          {usageGuideTab === 'models' && <>
+          <div>
             <Typography.Text strong>可用模型</Typography.Text>
             <div style={{ marginTop: 8 }}>
               <Spin spinning={modelsLoading} size="small">
@@ -576,6 +613,8 @@ const ApiKeysPage: React.FC = () => {
               </Spin>
             </div>
           </div>
+          </>}
+          {usageGuideTab === 'document' && <>
           <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
             <Typography.Title level={5} style={{ margin: '0 0 8px' }}>文档解析 API</Typography.Title>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
@@ -614,6 +653,7 @@ const ApiKeysPage: React.FC = () => {
               将 <Typography.Text code>解析接口返回的任务ID</Typography.Text> 替换为提交解析接口返回的 <Typography.Text code>jobId</Typography.Text>，每隔几秒查询一次即可。任务完成时返回解析结果下载地址、实际页数和扣除额度；失败时返回错误原因。
             </Typography.Paragraph>
           </div>
+          </>}
           <Alert type="warning" showIcon message="请勿在浏览器代码、公开仓库或截图中泄露完整 API 密钥。" />
         </Space>
       </Modal>
