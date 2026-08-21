@@ -8,6 +8,7 @@ import {
   postAppCatalogMedia,
   postAppCover,
   postAppPackage,
+  postAppPackageWithApiKey,
   postCategory,
   putApp,
   putCategory,
@@ -34,6 +35,7 @@ export default function appCatalogRouter(router: Router) {
     postAppCatalogMedia
   );
   router.post('/api/apps/upload-package', appPackageUpload.single('file'), postAppPackage);
+  router.post('/api/apps/upload-package/api-key', appPackageUpload.single('file'), postAppPackageWithApiKey);
   router.post('/api/apps', postApp);
   router.put('/api/apps/:id', putApp);
   router.delete('/api/apps/:id', removeApp);

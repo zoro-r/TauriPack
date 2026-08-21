@@ -29,6 +29,7 @@ import { verifyAccessToken } from '@/services/authService';
 import { isMemberActive } from '@/services/memberService';
 import { getMemberAppQuota } from '@/services/memberService';
 import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategoryService';
+import { authenticateDocumentApiKey } from '@/services/documentService';
 import { error as errorResponse, success } from '@/utils/tool';
 
 export const getCategoryList = async (ctx: Router.RouterContext) => {
@@ -165,25 +166,45 @@ export const postApp = async (ctx: Router.RouterContext) => {
   }
 };
 
+const uploadAppPackageForUser = async (
+  ctx: Router.RouterContext,
+  user: { _id: { toString(): string }; role: 'admin' | 'user' }
+) => {
+  const file = ctx.file as UploadedPackageFile | undefined;
+  const body = (ctx.request.body || {}) as { appName?: string; appId?: string };
+  const appId = body.appId ? String(body.appId) : undefined;
+  await authorizeMemberPackageUpload({
+    userId: user._id.toString(),
+    role: user.role,
+    appId
+  });
+  const result = await uploadAppPackage({
+    file: file as UploadedPackageFile,
+    appName: String(body.appName || ''),
+    appId
+  });
+  return {
+    ...result,
+    previewUrl: new URL(result.entryUrl, ctx.origin).toString()
+  };
+};
+
 export const postAppPackage = async (ctx: Router.RouterContext) => {
   try {
-    const user = await requireUser(ctx);
-    const file = ctx.file as UploadedPackageFile | undefined;
-    const body = (ctx.request.body || {}) as { appName?: string; appId?: string };
-    const appId = body.appId ? String(body.appId) : undefined;
-    await authorizeMemberPackageUpload({
-      userId: user._id.toString(),
-      role: user.role,
-      appId
-    });
-    ctx.body = success(
-      await uploadAppPackage({
-        file: file as UploadedPackageFile,
-        appName: String(body.appName || ''),
-        appId
-      }),
-      'app package uploaded'
-    );
+    ctx.body = success(await uploadAppPackageForUser(ctx, await requireUser(ctx)), 'app package uploaded');
+  } catch (err) {
+    ctx.body = errorResponse('upload app package failed', err);
+  }
+};
+
+export const postAppPackageWithApiKey = async (ctx: Router.RouterContext) => {
+  try {
+    const { userId } = await authenticateDocumentApiKey(String(ctx.headers.authorization || ''));
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new Error('API Key 关联的用户不存在');
+    }
+    ctx.body = success(await uploadAppPackageForUser(ctx, user), 'app package uploaded');
   } catch (err) {
     ctx.body = errorResponse('upload app package failed', err);
   }
