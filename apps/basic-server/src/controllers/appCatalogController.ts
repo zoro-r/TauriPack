@@ -1,5 +1,6 @@
 import type Router from '@koa/router';
 import {
+  assertAppDisplaySettingsPermission,
   assertMemberOwnsAppOrAdmin,
   authorizeMemberPackageUpload,
   canUserAccessApp,
@@ -9,8 +10,10 @@ import {
   deleteCategory,
   getAppDetailForViewer,
   listAppsPaged,
+  listHomeFeaturedApps,
   listCategories,
   updateApp,
+  updateAppDisplaySettings,
   updateCategory,
   type AppItemInput,
   type AppListQuery,
@@ -97,6 +100,7 @@ export const getAppList = async (ctx: Router.RouterContext) => {
       await listAppsPaged(
         {
           categoryId: query.categoryId,
+          scope: query.scope,
           keyword: query.keyword,
           page: pageParsed !== undefined && Number.isFinite(pageParsed) ? pageParsed : undefined,
           pageSize:
@@ -107,6 +111,24 @@ export const getAppList = async (ctx: Router.RouterContext) => {
     );
   } catch (err) {
     ctx.body = errorResponse('get apps failed', err);
+  }
+};
+
+export const getHomeFeaturedApps = async (ctx: Router.RouterContext) => {
+  try {
+    const token = getBearerToken(ctx);
+    let viewer: { userId: string; role: 'admin' | 'user' } | undefined;
+    if (token) {
+      try {
+        const user = await requireUser(ctx);
+        viewer = { userId: user._id.toString(), role: user.role };
+      } catch {
+        viewer = undefined;
+      }
+    }
+    ctx.body = success(await listHomeFeaturedApps(viewer));
+  } catch (err) {
+    ctx.body = errorResponse('get featured apps failed', err);
   }
 };
 
@@ -145,6 +167,7 @@ export const postApp = async (ctx: Router.RouterContext) => {
   try {
     const user = await requireUser(ctx);
     const body = (ctx.request.body || {}) as AppItemInput;
+    assertAppDisplaySettingsPermission(body, user.role);
     if (user.role === 'admin') {
       ctx.body = success(await createApp(body), 'app created');
       return;
@@ -244,6 +267,7 @@ export const putApp = async (ctx: Router.RouterContext) => {
     const id = String(ctx.params.id || '');
     await assertMemberOwnsAppOrAdmin(user._id.toString(), user.role, id);
     const body = (ctx.request.body || {}) as AppItemInput;
+    assertAppDisplaySettingsPermission(body, user.role);
     if (user.role !== 'admin') {
       body.accessLevel = 'owner';
       body.categoryId = await ensureMemberUploadCategoryId();
@@ -251,6 +275,15 @@ export const putApp = async (ctx: Router.RouterContext) => {
     ctx.body = success(await updateApp(id, body), 'app updated');
   } catch (err) {
     ctx.body = errorResponse('update app failed', err);
+  }
+};
+
+export const patchAppDisplaySettings = async (ctx: Router.RouterContext) => {
+  try {
+    await requireAdmin(ctx);
+    ctx.body = success(await updateAppDisplaySettings(String(ctx.params.id || ''), ctx.request.body), 'app settings updated');
+  } catch (err) {
+    ctx.body = errorResponse('update app settings failed', err);
   }
 };
 

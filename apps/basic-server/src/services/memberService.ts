@@ -11,6 +11,7 @@ import { createNativeWechatPayOrder, queryWechatPayOrder } from '@/services/wech
 import { creditNewApiRecharge } from '@/services/newApiService';
 import { creditDocumentOrder, getDocumentRechargeOption } from '@/services/documentService';
 import type { MemberPlanPurchaseLimit, MemberPlanType } from '@/models/MemberPlan';
+import type { MemberOrderStatus, MemberOrderType } from '@/models/MemberOrder';
 
 export interface MemberPlanInput {
   name: string;
@@ -374,6 +375,46 @@ export const listMemberOrders = async (userId: string) => {
     .lean();
 
   return items;
+};
+
+export interface MemberOrderListQuery {
+  orderType?: string;
+  status?: string;
+  page?: string | number;
+  pageSize?: string | number;
+}
+
+export const listMemberOrdersPaged = async (userId: string, query: MemberOrderListQuery) => {
+  const orderTypes: MemberOrderType[] = ['member', 'app', 'recharge', 'service', 'redeem'];
+  const statuses: MemberOrderStatus[] = ['pending', 'paid', 'closed', 'refunded'];
+  if (query.orderType && !orderTypes.includes(query.orderType as MemberOrderType)) {
+    throw new Error('无效的订单类型');
+  }
+  if (query.status && !statuses.includes(query.status as MemberOrderStatus)) {
+    throw new Error('无效的订单状态');
+  }
+  const requestedPage = Number(query.page ?? 1);
+  const pageSize = Number(query.pageSize ?? 10);
+  if (!Number.isSafeInteger(requestedPage) || requestedPage < 1 ||
+      !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    throw new Error('无效的分页参数');
+  }
+  const filter = {
+    userId,
+    ...(query.orderType === 'member'
+      ? { $or: [{ orderType: 'member' }, { orderType: { $exists: false } }] }
+      : query.orderType ? { orderType: query.orderType as MemberOrderType } : {}),
+    ...(query.status ? { status: query.status as MemberOrderStatus } : {})
+  };
+  const total = await MemberOrderModel.countDocuments(filter);
+  const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)));
+  const items = await MemberOrderModel.find(filter)
+    .populate('planId', 'name code price durationDays')
+    .sort({ createdAt: -1, _id: -1 })
+    .skip((page - 1) * pageSize)
+    .limit(pageSize)
+    .lean();
+  return { items, total, page, pageSize };
 };
 
 export const createMemberOrder = async (userId: string, planCode: string) => {

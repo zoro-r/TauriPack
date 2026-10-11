@@ -35,6 +35,10 @@ export interface AppItemInput {
   summary?: string;
   description?: string;
   cover?: string;
+  bannerImage?: string;
+  sortOrder?: number;
+  isPinned?: boolean;
+  isFeatured?: boolean;
   publisher?: string;
   content?: string;
   media?: AppMediaInput[];
@@ -45,6 +49,7 @@ export interface AppItemInput {
 }
 
 export interface AppListQuery {
+  scope?: 'home';
   categoryId?: string;
   keyword?: string;
   page?: number;
@@ -57,6 +62,34 @@ export interface AppListViewer {
 }
 
 const normalizeText = (value?: string) => value?.trim() || undefined;
+
+const APP_DISPLAY_FIELDS = ['sortOrder', 'isPinned', 'isFeatured', 'bannerImage'] as const;
+
+export const assertAppDisplaySettingsPermission = (input: AppItemInput, role: string) => {
+  if (role !== 'admin' && APP_DISPLAY_FIELDS.some((key) => Object.prototype.hasOwnProperty.call(input, key))) {
+    throw new Error('仅管理员可修改应用排序、置顶和轮播设置');
+  }
+};
+
+const mapAppDisplaySettings = (input: Partial<AppItemInput>) => {
+  if (input.sortOrder !== undefined && !Number.isSafeInteger(input.sortOrder)) {
+    throw new Error('排序值必须是整数');
+  }
+  for (const key of ['isPinned', 'isFeatured'] as const) {
+    if (input[key] !== undefined && typeof input[key] !== 'boolean') {
+      throw new Error('置顶和轮播推荐必须为布尔值');
+    }
+  }
+  if (input.bannerImage !== undefined && typeof input.bannerImage !== 'string') {
+    throw new Error('Banner 图片地址必须是字符串');
+  }
+  return {
+    ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+    ...(input.isPinned !== undefined ? { isPinned: input.isPinned } : {}),
+    ...(input.isFeatured !== undefined ? { isFeatured: input.isFeatured } : {}),
+    ...(input.bannerImage !== undefined ? { bannerImage: input.bannerImage.trim() } : {})
+  };
+};
 
 const normalizeAppMediaItems = (items?: AppMediaInput[]) => {
   if (!items?.length) {
@@ -147,6 +180,7 @@ const mapCategoryInput = (input: CategoryInput) => ({
 });
 
 const mapAppPayloadBase = (input: AppItemInput) => ({
+  ...mapAppDisplaySettings(input),
   name: input.name.trim(),
   categoryId: input.categoryId,
   accessLevel: input.accessLevel || 'login',
@@ -257,6 +291,14 @@ const normalizeAppListPaging = (
 export const buildAppListFilter = async (query: AppListQuery, viewer?: AppListViewer) => {
   const filter: Record<string, unknown> = {};
 
+  if (query.scope !== undefined && query.scope !== 'home') {
+    throw new Error('无效的应用列表范围');
+  }
+  // null 同时匹配历史文档中缺失 ownerUserId 的平台应用。
+  if (query.scope === 'home') {
+    filter.ownerUserId = null;
+  }
+
   if (query.categoryId) {
     ensureObjectId(query.categoryId, 'categoryId');
     filter.categoryId = query.categoryId;
@@ -326,6 +368,36 @@ export const buildAppListFilter = async (query: AppListQuery, viewer?: AppListVi
   return filter;
 };
 
+const findSortedApps = async (
+  filter: Record<string, unknown>,
+  featured: boolean,
+  paging?: { skip: number; limit: number }
+) => {
+  // aggregate 不自动转换 ObjectId；沿用模型的查询转换，保留用户/分类隔离条件。
+  const castFilter = AppItemModel.find(filter).cast(AppItemModel);
+  const pipeline: mongoose.PipelineStage[] = [
+    { $match: castFilter },
+    { $set: {
+      sortOrder: { $ifNull: ['$sortOrder', 0] },
+      isPinned: { $ifNull: ['$isPinned', false] },
+      isFeatured: { $ifNull: ['$isFeatured', false] }
+    } },
+    { $sort: featured
+      ? { sortOrder: 1, createdAt: -1, _id: -1 }
+      : { isPinned: -1, sortOrder: 1, createdAt: -1, _id: -1 } }
+  ];
+  if (paging) {
+    pipeline.push({ $skip: paging.skip }, { $limit: paging.limit });
+  }
+  const list = await AppItemModel.aggregate(pipeline);
+  return AppItemModel.populate(list, { path: 'categoryId', select: 'name slug icon sort isActive' });
+};
+
+export const listHomeFeaturedApps = async (viewer?: AppListViewer) => {
+  const filter = await buildAppListFilter({ scope: 'home' }, viewer);
+  return findSortedApps({ ...filter, isFeatured: true }, true);
+};
+
 export const listAppsPaged = async (query: AppListQuery, viewer?: AppListViewer) => {
   const { page, pageSize } = normalizeAppListPaging(
     query.page,
@@ -336,12 +408,7 @@ export const listAppsPaged = async (query: AppListQuery, viewer?: AppListViewer)
   const skip = (page - 1) * pageSize;
 
   const [list, total] = await Promise.all([
-    AppItemModel.find(filter)
-      .populate('categoryId', 'name slug icon sort isActive')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(pageSize)
-      .lean(),
+    findSortedApps(filter, false, { skip, limit: pageSize }),
     AppItemModel.countDocuments(filter)
   ]);
 
@@ -495,6 +562,7 @@ export const getAppDetailForViewer = async (
 };
 
 export const createApp = async (input: AppItemInput, ownerUserId?: string | null) => {
+  if (ownerUserId) assertAppDisplaySettingsPermission(input, 'user');
   validateAppInput(input);
   const basePayload = mapAppPayloadForCreate(input);
   const slug = normalizeText(input.slug) || (await buildUniqueAppSlug(basePayload.name));
@@ -514,6 +582,28 @@ export const createApp = async (input: AppItemInput, ownerUserId?: string | null
   });
 };
 
+export const updateAppDisplaySettings = async (id: string, input: unknown) => {
+  ensureObjectId(id, 'appId');
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('请提交置顶或轮播推荐设置');
+  }
+  const keys = Object.keys(input);
+  if (!keys.length || keys.some((key) => key !== 'isPinned' && key !== 'isFeatured')) {
+    throw new Error('仅支持修改置顶和轮播推荐');
+  }
+  const patch = input as Pick<AppItemInput, 'isPinned' | 'isFeatured'>;
+  if (keys.some((key) => typeof patch[key as keyof typeof patch] !== 'boolean')) {
+    throw new Error('置顶和轮播推荐必须为布尔值');
+  }
+  // 仅原子更新提交的开关，避免详情页旧数据覆盖其他字段或另一个开关。
+  const app = await AppItemModel.findByIdAndUpdate(id, { $set: mapAppDisplaySettings(patch) }, {
+    new: true,
+    runValidators: true
+  });
+  if (!app) throw new Error('app not found');
+  return { isPinned: Boolean(app.isPinned), isFeatured: Boolean(app.isFeatured) };
+};
+
 export const updateApp = async (id: string, input: AppItemInput) => {
   ensureObjectId(id, 'appId');
   validateAppInput(input);
@@ -530,7 +620,28 @@ export const updateApp = async (id: string, input: AppItemInput) => {
   if (!app) {
     throw new Error('app not found');
   }
+  await removeUnusedAppImages([existing.cover, existing.bannerImage]);
   return app;
+};
+
+// 图片上传与封面共用目录；仅清理本地文件，且仍被任意应用引用时保留。
+const removeUnusedAppImages = async (urls: (string | undefined)[]) => {
+  for (const url of new Set(urls)) {
+    const filename = url?.match(/^\/static\/covers\/([a-z0-9-]+\.(?:png|jpg|jpeg|webp))$/i)?.[1];
+    if (!filename || !url) continue;
+    try {
+      const referenced = await AppItemModel.exists({
+        $or: [{ cover: url }, { bannerImage: url }, { 'media.url': url }, { 'media.poster': url }]
+      });
+      if (!referenced) {
+        const filePath = path.join(process.cwd(), 'uploads', 'covers', filename);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      }
+    } catch (err) {
+      // 保存已成功，文件清理失败不应让客户端误以为应用没有保存。
+      console.warn('清理应用图片失败', err);
+    }
+  }
 };
 
 export const deleteApp = async (id: string) => {
@@ -547,5 +658,6 @@ export const deleteApp = async (id: string) => {
   if (fs.existsSync(uploadDir)) {
     fs.rmSync(uploadDir, { recursive: true, force: true });
   }
+  await removeUnusedAppImages([app.cover, app.bannerImage]);
   return { id };
 };

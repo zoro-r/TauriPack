@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Avatar, Button, Dropdown, Form, Input, MenuProps, Modal, Space, Table, Tag, Tabs, Typography, message } from 'antd';
+import { Avatar, Button, Dropdown, Form, Input, MenuProps, Modal, Select, Space, Table, Tag, Tabs, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Outlet, history, useLocation } from '@umijs/max';
 import request from '../utils/request';
@@ -121,6 +121,20 @@ const userOrderTypeLabelOf = (value?: UserOrderItem['orderType']) => {
 const userOrderAmountLabelOf = (order: UserOrderItem) =>
   order.orderType === 'redeem' ? '--' : `¥${order.amount}`;
 
+interface UserOrdersQuery {
+  orderType: NonNullable<UserOrderItem['orderType']> | 'all';
+  status: UserOrderItem['status'] | 'all';
+  page: number;
+  pageSize: number;
+}
+
+interface UserOrdersPage {
+  items: UserOrderItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 interface LoginStatePayload {
   state: string;
   expiresAt: string;
@@ -146,6 +160,12 @@ const RootLayout: React.FC = () => {
   const [userOrdersOpen, setUserOrdersOpen] = useState(false);
   const [userOrdersLoading, setUserOrdersLoading] = useState(false);
   const [userOrders, setUserOrders] = useState<UserOrderItem[]>([]);
+  const [userOrdersQuery, setUserOrdersQuery] = useState<UserOrdersQuery>({
+    orderType: 'recharge', status: 'all', page: 1, pageSize: 10
+  });
+  const [userOrdersTotal, setUserOrdersTotal] = useState(0);
+  const userOrdersQueryRef = useRef(userOrdersQuery);
+  const userOrdersRequestRef = useRef(0);
   const [refreshingUserOrderId, setRefreshingUserOrderId] = useState<string>();
   const refreshingUserOrderRef = useRef(false);
   const [redeemModalOpen, setRedeemModalOpen] = useState(false);
@@ -375,13 +395,35 @@ const RootLayout: React.FC = () => {
     messageApi.success('已退出当前账号');
   };
 
-  const loadUserOrders = async (alert = true) => {
+  const loadUserOrders = async (alert = true, query = userOrdersQueryRef.current) => {
+    const requestId = ++userOrdersRequestRef.current;
+    const previous = userOrdersQueryRef.current;
+    if (previous.orderType !== query.orderType || previous.status !== query.status ||
+        previous.page !== query.page || previous.pageSize !== query.pageSize) {
+      setUserOrders([]);
+      setUserOrdersTotal(0);
+    }
+    userOrdersQueryRef.current = query;
+    setUserOrdersQuery(query);
     setUserOrdersLoading(true);
     try {
-      const data = await request<UserOrderItem[]>('/api/member/orders', { alert });
-      setUserOrders(data);
+      const data = await request<UserOrdersPage>('/api/member/orders', {
+        alert,
+        params: {
+          page: query.page,
+          pageSize: query.pageSize,
+          orderType: query.orderType === 'all' ? undefined : query.orderType,
+          status: query.status === 'all' ? undefined : query.status
+        }
+      });
+      if (requestId !== userOrdersRequestRef.current) return;
+      setUserOrders(data.items);
+      setUserOrdersTotal(data.total);
+      const nextQuery = { ...query, page: data.page, pageSize: data.pageSize };
+      userOrdersQueryRef.current = nextQuery;
+      setUserOrdersQuery(nextQuery);
     } finally {
-      setUserOrdersLoading(false);
+      if (requestId === userOrdersRequestRef.current) setUserOrdersLoading(false);
     }
   };
 
@@ -420,7 +462,7 @@ const RootLayout: React.FC = () => {
       return;
     }
     setUserOrdersOpen(true);
-    await loadUserOrders();
+    await loadUserOrders(true, { orderType: 'recharge', status: 'all', page: 1, pageSize: userOrdersQueryRef.current.pageSize });
   };
 
   const openRedeemCenter = () => {
@@ -618,33 +660,89 @@ const RootLayout: React.FC = () => {
 
       <Modal
         title="我的订单"
+        className="catalog-user-orders-modal"
         open={userOrdersOpen}
         onCancel={() => {
           setUserOrdersOpen(false);
         }}
         footer={null}
-        width={920}
+        width={1200}
       >
+        <Space wrap className="catalog-user-orders-modal__filters">
+          <Select<UserOrdersQuery['orderType']>
+            aria-label="订单类型"
+            value={userOrdersQuery.orderType}
+            onChange={(orderType) => void loadUserOrders(true, { ...userOrdersQueryRef.current, orderType, page: 1 }).catch(() => undefined)}
+            style={{ width: 140 }}
+            options={[
+              { label: '全部类型', value: 'all' },
+              { label: '充值订单', value: 'recharge' },
+              { label: '会员订单', value: 'member' },
+              { label: '应用订单', value: 'app' },
+              { label: '服务订单', value: 'service' },
+              { label: '兑换订单', value: 'redeem' }
+            ]}
+          />
+          <Select<UserOrdersQuery['status']>
+            aria-label="订单状态"
+            value={userOrdersQuery.status}
+            onChange={(status) => void loadUserOrders(true, { ...userOrdersQueryRef.current, status, page: 1 }).catch(() => undefined)}
+            style={{ width: 140 }}
+            options={[
+              { label: '全部状态', value: 'all' },
+              { label: '已支付', value: 'paid' },
+              { label: '待支付', value: 'pending' },
+              { label: '已关闭', value: 'closed' },
+              { label: '已退款', value: 'refunded' }
+            ]}
+          />
+        </Space>
         <Table<UserOrderItem>
           rowKey="_id"
           dataSource={userOrders}
           loading={userOrdersLoading}
-          pagination={false}
-          scroll={{ x: 980 }}
+          pagination={{
+            current: userOrdersQuery.page,
+            pageSize: userOrdersQuery.pageSize,
+            total: userOrdersTotal,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            responsive: true,
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (page, pageSize) => void loadUserOrders(true, {
+              ...userOrdersQueryRef.current,
+              page: pageSize !== userOrdersQueryRef.current.pageSize ? 1 : page,
+              pageSize
+            }).catch(() => undefined)
+          }}
+          tableLayout="fixed"
+          scroll={{ x: 1100 }}
           columns={
             [
-              serialColumn<UserOrderItem>(),
+              serialColumn<UserOrderItem>(userOrdersQuery.page, userOrdersQuery.pageSize, { width: 64 }),
               {
                 title: '订单号',
-                dataIndex: 'orderNo'
+                dataIndex: 'orderNo',
+                width: 300,
+                render: (value: string) => (
+                  <Typography.Text
+                    className="catalog-user-order-number"
+                    ellipsis={{ tooltip: value }}
+                    copyable={{ text: value, tooltips: ['复制订单号', '已复制'] }}
+                  >
+                    {value}
+                  </Typography.Text>
+                )
               },
               {
                 title: '类型',
                 dataIndex: 'orderType',
+                width: 96,
                 render: (value: UserOrderItem['orderType']) => userOrderTypeLabelOf(value)
               },
               {
                 title: '标题',
+                ellipsis: true,
                 render: (_, record) =>
                   typeof record.planId === 'string'
                     ? record.title || record.description || '--'
@@ -652,11 +750,13 @@ const RootLayout: React.FC = () => {
               },
               {
                 title: '金额',
+                width: 88,
                 render: (_, record) => userOrderAmountLabelOf(record)
               },
               {
                 title: '状态',
                 dataIndex: 'status',
+                width: 88,
                 render: (value: UserOrderItem['status'], record) => (
                   <Tag color={value === 'paid' ? 'green' : value === 'pending' ? 'gold' : value === 'refunded' ? 'red' : 'default'}>
                     {record.orderType === 'redeem'
@@ -674,13 +774,13 @@ const RootLayout: React.FC = () => {
               {
                 title: '创建时间',
                 dataIndex: 'createdAt',
+                width: 184,
                 render: formatDateTime
               },
               {
                 title: '操作',
                 key: 'operation',
-                width: 110,
-                fixed: 'right',
+                width: 112,
                 render: (_, record) => record.payChannel === 'wechat_native' ? (
                   <Button
                     size="small"

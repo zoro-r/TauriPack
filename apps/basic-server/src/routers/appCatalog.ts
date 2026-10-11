@@ -4,12 +4,14 @@ import {
   getAppById,
   getAppList,
   getCategoryList,
+  getHomeFeaturedApps,
   postApp,
   postAppCatalogMedia,
   postAppCover,
   postAppPackage,
   postAppPackageWithApiKey,
   postCategory,
+  patchAppDisplaySettings,
   putApp,
   putCategory,
   removeApp,
@@ -33,6 +35,7 @@ export default function appCatalogRouter(router: Router) {
   router.delete('/api/app-categories/:id', removeCategory);
 
   router.get('/api/apps', getAppList);
+  router.get('/api/apps/home-featured', getHomeFeaturedApps);
   router.get('/api/apps/:id/access', getAppAccess);
   router.get('/api/apps/:id/temporary-links', getAppTemporaryLinks);
   router.post('/api/apps/:id/temporary-links', postAppTemporaryLink);
@@ -50,5 +53,6 @@ export default function appCatalogRouter(router: Router) {
   router.post('/api/apps/upload-package/api-key', appPackageUpload.single('file'), postAppPackageWithApiKey);
   router.post('/api/apps', postApp);
   router.put('/api/apps/:id', putApp);
+  router.patch('/api/apps/:id/display-settings', patchAppDisplaySettings);
   router.delete('/api/apps/:id', removeApp);
 }

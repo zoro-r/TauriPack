@@ -3,6 +3,7 @@ import {
   createMemberOrder,
   getMemberMe,
   listMemberOrders,
+  listMemberOrdersPaged,
   listMemberPlans,
   settleMemberOrderByWechatCallback,
   syncMemberOrderStatus
@@ -51,7 +52,14 @@ export const getMe = async (ctx: Router.RouterContext) => {
 export const getOrders = async (ctx: Router.RouterContext) => {
   try {
     const userId = await getUserIdFromContext(ctx);
-    ctx.body = success(await listMemberOrders(userId));
+    const paged = ['page', 'pageSize', 'orderType', 'status'].some((key) => ctx.query[key] !== undefined);
+    // 不带查询参数的旧客户端仍返回原来的订单数组。
+    ctx.body = success(paged ? await listMemberOrdersPaged(userId, {
+      page: ctx.query.page === undefined ? undefined : String(ctx.query.page),
+      pageSize: ctx.query.pageSize === undefined ? undefined : String(ctx.query.pageSize),
+      orderType: ctx.query.orderType === undefined ? undefined : String(ctx.query.orderType),
+      status: ctx.query.status === undefined ? undefined : String(ctx.query.status)
+    }) : await listMemberOrders(userId));
   } catch (err) {
     ctx.body = errorResponse('get member orders failed', err);
   }

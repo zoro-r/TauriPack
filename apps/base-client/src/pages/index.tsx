@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
+  Alert,
   Button,
+  Carousel,
   DatePicker,
   Divider,
   Empty,
@@ -65,6 +67,10 @@ interface AppItem {
   summary?: string;
   description?: string;
   cover?: string;
+  bannerImage?: string;
+  sortOrder?: number;
+  isPinned?: boolean;
+  isFeatured?: boolean;
   publisher?: string;
   content?: string;
   media?: AppMediaItem[];
@@ -96,6 +102,10 @@ interface AppFormValues {
   summary?: string;
   description?: string;
   cover?: string;
+  bannerImage?: string;
+  sortOrder?: number;
+  isPinned?: boolean;
+  isFeatured?: boolean;
   media?: AppMediaItem[];
 }
 
@@ -281,7 +291,9 @@ const fetchAppsPageRequest = async (input: {
   if (trimmed) {
     params.keyword = trimmed;
   }
-  if (input.categoryId !== 'all') {
+  if (input.categoryId === 'all') {
+    params.scope = 'home';
+  } else {
     params.categoryId = input.categoryId;
   }
   return request<AppsPagedResponse>('/api/apps', { params, alert: false });
@@ -554,6 +566,27 @@ const CatalogDetailMediaVideoTile = ({
   );
 };
 
+const FeaturedAppSlide = ({ app, onOpen }: { app: AppItem; onOpen: () => void }) => {
+  const [failedImages, setFailedImages] = useState<string[]>([]);
+  useEffect(() => setFailedImages([]), [app.bannerImage, app.cover]);
+  const image = [app.bannerImage, app.cover].find((url) => url && !failedImages.includes(url));
+  return (
+    <button type="button" className="catalog-featured__slide" onClick={onOpen} aria-label={`查看${app.name}`}>
+      {image ? (
+        <img
+          src={resolveAppAssetUrl(image)}
+          alt={app.name}
+          onError={() => setFailedImages((urls) => [...urls, image])}
+        />
+      ) : <div className="catalog-featured__placeholder">{app.name}</div>}
+      <div className="catalog-featured__caption">
+        <strong>{app.name}</strong>
+        {app.summary ? <span>{app.summary}</span> : null}
+      </div>
+    </button>
+  );
+};
+
 const HomePage: React.FC = () => {
   const [messageApi, contextHolder] = message.useMessage();
   const [loading, setLoading] = useState(true);
@@ -561,12 +594,16 @@ const HomePage: React.FC = () => {
   const [categories, setCategories] = useState<AppCategory[]>([]);
   const [apps, setApps] = useState<AppItem[]>([]);
   const [activeCategoryId, setActiveCategoryId] = useState<string>('all');
+  const [featuredApps, setFeaturedApps] = useState<AppItem[]>([]);
+  const [featuredError, setFeaturedError] = useState(false);
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [categoryManageOpen, setCategoryManageOpen] = useState(false);
   const [appModalOpen, setAppModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<AppCategory | null>(null);
   const [editingApp, setEditingApp] = useState<AppItem | null>(null);
   const [selectedApp, setSelectedApp] = useState<AppItem | null>(null);
+  const [displaySettingSaving, setDisplaySettingSaving] = useState<'isPinned' | 'isFeatured' | null>(null);
+  const displaySettingSavingRef = useRef(false);
   const [temporaryLinkApp, setTemporaryLinkApp] = useState<AppItem | null>(null);
   const [temporaryLinks, setTemporaryLinks] = useState<AppTemporaryLinkItem[]>([]);
   const [temporaryLinksLoading, setTemporaryLinksLoading] = useState(false);
@@ -591,6 +628,7 @@ const HomePage: React.FC = () => {
   const [appPackageInfo, setAppPackageInfo] = useState<AppPackageUploadResult | null>(null);
   const [appCoverFile, setAppCoverFile] = useState<File | null>(null);
   const [appCoverUploading, setAppCoverUploading] = useState(false);
+  const [bannerUploading, setBannerUploading] = useState(false);
   const [catalogMediaUploadKey, setCatalogMediaUploadKey] = useState<string | null>(null);
   const [mediaPreviewIndex, setMediaPreviewIndex] = useState<number | null>(null);
   const [mediaCarouselPage, setMediaCarouselPage] = useState(0);
@@ -603,6 +641,8 @@ const HomePage: React.FC = () => {
     total: 0
   });
   const appSearchDebounceTimerRef = useRef<ReturnType<typeof window.setTimeout>>();
+  const appListRequestRef = useRef(0);
+  const featuredRequestRef = useRef(0);
   const appSearchSkipDebouncedFetchRef = useRef(false);
   const appSearchDebouncePrimedRef = useRef(false);
   /** 跳过首次执行，避免分类切换请求与首轮 loadData 重复 */
@@ -611,6 +651,14 @@ const HomePage: React.FC = () => {
   const [appForm] = Form.useForm<AppFormValues>();
   const [temporaryLinkForm] = Form.useForm<AppTemporaryLinkFormValues>();
   const isAdmin = currentUser?.role === 'admin';
+  const appListQuery = {
+    page: appPagination.current,
+    pageSize: appPagination.pageSize,
+    keyword: appListKeyword,
+    categoryId: activeCategoryId
+  };
+  const appListQueryRef = useRef(appListQuery);
+  appListQueryRef.current = appListQuery;
 
   const applyAppsPageResponse = (data: AppsPagedResponse) => {
     setApps(data.list);
@@ -629,6 +677,7 @@ const HomePage: React.FC = () => {
       categoryId: string;
     }> = {}
   ) => {
+    const requestId = ++appListRequestRef.current;
     setLoading(true);
     try {
       const data = await fetchAppsPageRequest({
@@ -637,14 +686,30 @@ const HomePage: React.FC = () => {
         keyword: patch.keyword !== undefined ? patch.keyword : appListKeyword,
         categoryId: patch.categoryId ?? activeCategoryId
       });
-      applyAppsPageResponse(data);
+      if (requestId === appListRequestRef.current) applyAppsPageResponse(data);
     } finally {
-      setLoading(false);
+      if (requestId === appListRequestRef.current) setLoading(false);
+    }
+  };
+
+  const reloadFeaturedApps = async () => {
+    const requestId = ++featuredRequestRef.current;
+    try {
+      const data = await request<AppItem[]>('/api/apps/home-featured', { alert: false });
+      if (requestId !== featuredRequestRef.current) return;
+      setFeaturedApps(data);
+      setFeaturedError(false);
+    } catch {
+      if (requestId !== featuredRequestRef.current) return;
+      setFeaturedApps([]);
+      setFeaturedError(true);
     }
   };
 
   const loadData = async () => {
+    const requestId = ++appListRequestRef.current;
     setLoading(true);
+    void reloadFeaturedApps();
     try {
       const nextCategories = await request<AppCategory[]>('/api/app-categories');
       setCategories(nextCategories);
@@ -654,9 +719,9 @@ const HomePage: React.FC = () => {
         keyword: appListKeyword,
         categoryId: activeCategoryId
       });
-      applyAppsPageResponse(data);
+      if (requestId === appListRequestRef.current) applyAppsPageResponse(data);
     } finally {
-      setLoading(false);
+      if (requestId === appListRequestRef.current) setLoading(false);
     }
   };
 
@@ -981,9 +1046,8 @@ const HomePage: React.FC = () => {
   };
 
   const openCategoryManage = async () => {
-    if (!memberInfo?.isMember) {
-      messageApi.info('分类管理仅会员可用，请先开通会员');
-      await openMemberCenter();
+    if (!isAdmin) {
+      messageApi.info('分类管理仅管理员可用');
       return;
     }
     setCategoryManageOpen(true);
@@ -1054,6 +1118,9 @@ const HomePage: React.FC = () => {
       cover: '',
       media: []
     });
+    if (isAdmin) {
+      appForm.setFieldsValue({ sortOrder: 0, isPinned: false, isFeatured: false, bannerImage: '' });
+    }
     setAppModalOpen(true);
   };
 
@@ -1092,11 +1159,20 @@ const HomePage: React.FC = () => {
       cover: app.cover,
       media: sortAppMediaItems(app.media)
     });
+    if (isAdmin) {
+      appForm.setFieldsValue({
+        sortOrder: app.sortOrder ?? 0,
+        isPinned: app.isPinned ?? false,
+        isFeatured: app.isFeatured ?? false,
+        bannerImage: app.bannerImage || ''
+      });
+    }
     setAppModalOpen(true);
   };
 
-  const uploadAppCover = async (file: File) => {
-    setAppCoverUploading(true);
+  const uploadAppCover = async (file: File, field: 'cover' | 'bannerImage' = 'cover') => {
+    const setUploading = field === 'cover' ? setAppCoverUploading : setBannerUploading;
+    setUploading(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -1107,12 +1183,14 @@ const HomePage: React.FC = () => {
           'Content-Type': 'multipart/form-data'
         }
       });
-      appForm.setFieldValue('cover', data.coverUrl);
-      setAppCoverFile(file);
-      messageApi.success('封面已上传');
+      appForm.setFieldValue(field, data.coverUrl);
+      if (field === 'cover') setAppCoverFile(file);
+      messageApi.success(field === 'cover' ? '封面已上传' : 'Banner 图片已上传');
       return false;
+    } catch {
+      return Upload.LIST_IGNORE;
     } finally {
-      setAppCoverUploading(false);
+      setUploading(false);
     }
   };
 
@@ -1182,6 +1260,10 @@ const HomePage: React.FC = () => {
   };
 
   const submitApp = async () => {
+    if (appCoverUploading || bannerUploading || catalogMediaUploadKey) {
+      messageApi.info('请等待图片或媒体上传完成');
+      return;
+    }
     const values = await appForm.validateFields();
     if (!editingApp && !appPackageFile) {
       messageApi.error('请上传 zip 安装包');
@@ -1209,8 +1291,10 @@ const HomePage: React.FC = () => {
         setAppPackageInfo(packageInfo);
       }
 
+      const { sortOrder, isPinned, isFeatured, bannerImage, ...baseValues } = values;
       const payload = {
-        ...values,
+        ...baseValues,
+        ...(isAdmin ? { sortOrder, isPinned, isFeatured, bannerImage } : {}),
         publisher: currentUser?.nickname || '',
         slug: packageInfo?.appSlug,
         packageName: packageInfo?.packageName,
@@ -1238,6 +1322,29 @@ const HomePage: React.FC = () => {
       fetchMemberInfo().catch(() => undefined);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const toggleAppDisplaySetting = async (app: AppItem, field: 'isPinned' | 'isFeatured') => {
+    if (!isAdmin || displaySettingSavingRef.current) return;
+    displaySettingSavingRef.current = true;
+    setDisplaySettingSaving(field);
+    try {
+      const settings = await request<{ isPinned: boolean; isFeatured: boolean }>(`/api/apps/${app._id}/display-settings`, {
+        method: 'PATCH',
+        data: { [field]: !app[field] }
+      });
+      setSelectedApp((current) => current?._id === app._id ? { ...current, ...settings } : current);
+      setApps((current) => current.map((item) => item._id === app._id ? { ...item, ...settings } : item));
+      messageApi.success(field === 'isPinned'
+        ? (settings.isPinned ? '已置顶' : '已取消置顶')
+        : (settings.isFeatured ? '已推荐到轮播' : '已取消轮播推荐'));
+      await Promise.all([reloadAppsList(appListQueryRef.current), reloadFeaturedApps()]);
+    } catch {
+      // request 已显示错误；保存失败时保持原按钮状态，刷新失败时保留已保存的设置。
+    } finally {
+      displaySettingSavingRef.current = false;
+      setDisplaySettingSaving(null);
     }
   };
 
@@ -1374,38 +1481,33 @@ const HomePage: React.FC = () => {
     <>
       {contextHolder}
       <div className="catalog-layout">
-            <aside className="catalog-sidebar">
-              <div className="catalog-sidebar__header">
-                {isAdmin ? (
-                  <Button size="small" onClick={openCategoryManage}>
-                    分类管理
-                  </Button>
-                ) : null}
-              </div>
-
-              <button
-                type="button"
-                className={`catalog-category ${activeCategoryId === 'all' ? 'is-active' : ''}`}
-                onClick={() => setActiveCategoryId('all')}
-              >
-                全部应用
-              </button>
-
-              <div className="catalog-category-list">
-                {categories.map((category) => (
-                  <button
-                    key={category._id}
-                    type="button"
-                    className={`catalog-category ${activeCategoryId === category._id ? 'is-active' : ''}`}
-                    onClick={() => setActiveCategoryId(category._id)}
-                  >
-                    {sidebarCategoryLabel(category, isAdmin)}
-                  </button>
-                ))}
-              </div>
-            </aside>
-
             <main className="catalog-main">
+              {activeCategoryId === 'all' && !appListKeyword.trim() ? (
+                featuredError ? (
+                  <Alert
+                    className="catalog-featured"
+                    type="warning"
+                    showIcon
+                    message="推荐应用加载失败"
+                    action={<Button size="small" onClick={() => void reloadFeaturedApps()}>重试</Button>}
+                  />
+                ) : featuredApps.length ? (
+                  <section className="catalog-featured" aria-label="精选应用">
+                    <Carousel
+                      autoplay={featuredApps.length > 1}
+                      autoplaySpeed={5000}
+                      pauseOnHover
+                      arrows={featuredApps.length > 1}
+                      dots={featuredApps.length > 1}
+                      infinite={featuredApps.length > 1}
+                    >
+                      {featuredApps.map((app) => (
+                        <FeaturedAppSlide key={app._id} app={app} onOpen={() => void handleOpenAppDetail(app)} />
+                      ))}
+                    </Carousel>
+                  </section>
+                ) : null
+              ) : null}
               <div className="catalog-main__header">
                 <Input.Search
                   className="catalog-main__search"
@@ -1417,6 +1519,7 @@ const HomePage: React.FC = () => {
                   enterButton
                 />
                 <div className="catalog-main__header-actions">
+                  {isAdmin ? <Button onClick={openCategoryManage}>分类管理</Button> : null}
                   {activeTopNav === 'apps' ? (
                     <Tooltip title={uploadAppEntryHint ?? undefined}>
                       <Button
@@ -1430,9 +1533,28 @@ const HomePage: React.FC = () => {
                 </div>
               </div>
 
+              <nav className="catalog-category-list" aria-label="应用分类">
+                <button
+                  type="button"
+                  className={`catalog-category ${activeCategoryId === 'all' ? 'is-active' : ''}`}
+                  aria-current={activeCategoryId === 'all' ? 'page' : undefined}
+                  onClick={() => setActiveCategoryId('all')}
+                >全部应用</button>
+                {categories.map((category) => (
+                  <button
+                    key={category._id}
+                    type="button"
+                    className={`catalog-category ${activeCategoryId === category._id ? 'is-active' : ''}`}
+                    aria-current={activeCategoryId === category._id ? 'page' : undefined}
+                    title={sidebarCategoryLabel(category, isAdmin)}
+                    onClick={() => setActiveCategoryId(category._id)}
+                  >{sidebarCategoryLabel(category, isAdmin)}</button>
+                ))}
+              </nav>
+
               {activeTopNav === 'categories' ? (
                 <div className="catalog-empty">
-                  <Empty description="请通过左上角分类管理查看和维护分类" />
+                  <Empty description="请通过上方分类管理查看和维护分类" />
                 </div>
               ) : (
                 <Spin spinning={loading}>
@@ -1558,6 +1680,28 @@ const HomePage: React.FC = () => {
                 关闭
               </Button>
               <Space wrap className="catalog-app-detail-modal__footer-actions">
+                {isAdmin ? (
+                  <>
+                    <Button
+                      type={selectedApp.isPinned ? 'primary' : 'default'}
+                      ghost={Boolean(selectedApp.isPinned)}
+                      loading={displaySettingSaving === 'isPinned'}
+                      disabled={displaySettingSaving !== null}
+                      onClick={() => void toggleAppDisplaySetting(selectedApp, 'isPinned')}
+                    >
+                      {selectedApp.isPinned ? '取消置顶' : '置顶'}
+                    </Button>
+                    <Button
+                      type={selectedApp.isFeatured ? 'primary' : 'default'}
+                      ghost={Boolean(selectedApp.isFeatured)}
+                      loading={displaySettingSaving === 'isFeatured'}
+                      disabled={displaySettingSaving !== null}
+                      onClick={() => void toggleAppDisplaySetting(selectedApp, 'isFeatured')}
+                    >
+                      {selectedApp.isFeatured ? '取消推荐' : '轮播推荐'}
+                    </Button>
+                  </>
+                ) : null}
                 {isAdmin ||
                 (Boolean(currentUser?.id && selectedApp.ownerUserId === currentUser.id) &&
                   memberInfo?.isMember) ? (
@@ -1566,13 +1710,13 @@ const HomePage: React.FC = () => {
                     title="确认删除该应用？"
                     onConfirm={async () => deleteApp(selectedApp._id)}
                   >
-                    <Button danger>删除</Button>
+                    <Button danger disabled={displaySettingSaving !== null}>删除</Button>
                   </Popconfirm>
                 ) : null}
                 {isAdmin ||
                 (Boolean(currentUser?.id && selectedApp.ownerUserId === currentUser.id) &&
                   memberInfo?.isMember) ? (
-                  <Button key="edit" onClick={() => openAppEdit(selectedApp)}>
+                  <Button key="edit" disabled={displaySettingSaving !== null} onClick={() => openAppEdit(selectedApp)}>
                     编辑
                   </Button>
                 ) : null}
@@ -2094,6 +2238,7 @@ const HomePage: React.FC = () => {
 
       <Modal
         title={editingApp ? '编辑应用' : '新建应用'}
+        className="catalog-app-edit-modal"
         open={appModalOpen}
         onCancel={() => {
           setAppModalOpen(false);
@@ -2104,10 +2249,10 @@ const HomePage: React.FC = () => {
         onOk={submitApp}
         confirmLoading={saving}
         destroyOnClose
-        width={760}
+        width={880}
       >
         <Form form={appForm} layout="vertical">
-          <div className="catalog-form-grid">
+          <div className={`catalog-form-grid ${isAdmin ? 'catalog-form-grid--three' : 'catalog-form-grid--single'}`}>
             <Form.Item label="应用名称" name="name" rules={[{ required: true, message: '请输入应用名称' }]}>
               <Input placeholder="请输入应用名称" />
             </Form.Item>
@@ -2122,6 +2267,23 @@ const HomePage: React.FC = () => {
                 />
               </Form.Item>
             ) : null}
+            {isAdmin ? (
+              <Form.Item
+                label="访问级别"
+                name="accessLevel"
+                rules={[{ required: true, message: '请选择访问级别' }]}
+                tooltip="选择应用的访问权限；仅自己可见时，仅本人和管理员可操作。"
+              >
+                <Select
+                  options={[
+                    { label: '登录可用', value: 'login' },
+                    { label: '会员', value: 'member' },
+                    { label: '单独授权', value: 'explicit' },
+                    { label: '仅自己可见', value: 'owner' }
+                  ]}
+                />
+              </Form.Item>
+            ) : null}
           </div>
 
           {!isAdmin ? (
@@ -2133,27 +2295,59 @@ const HomePage: React.FC = () => {
                 <Input type="hidden" />
               </Form.Item>
             </>
-          ) : (
-            <Form.Item
-              label="访问级别"
-              name="accessLevel"
-              rules={[{ required: true, message: '请选择访问级别' }]}
-              tooltip="其他用户在应用广场中看不到该应用；仅你自己的账号和管理员可操作。"
-            >
-              <Select
-                options={[
-                  { label: '登录可用', value: 'login' },
-                  { label: '会员', value: 'member' },
-                  { label: '单独授权', value: 'explicit' },
-                  { label: '仅自己可见', value: 'owner' }
-                ]}
-              />
-            </Form.Item>
-          )}
+          ) : null}
 
           <Form.Item label="摘要" name="summary">
             <Input.TextArea rows={2} placeholder="请输入简短摘要，用于卡片展示" />
           </Form.Item>
+          {isAdmin ? (
+            <div className="catalog-app-display-settings">
+              <div className="catalog-app-display-settings__row">
+                <Form.Item label="排序值" name="sortOrder" tooltip="整数，越小越靠前；同值时新应用优先">
+                  <InputNumber precision={0} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item label="列表置顶" name="isPinned" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item label="首页轮播推荐" name="isFeatured" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </div>
+              <Form.Item
+                label="Banner 图片"
+                extra="用于首页精选轮播；未设置时使用应用主图。会员上传的应用不进入首页。"
+              >
+                <Space>
+                  <Upload
+                    accept=".png,.jpg,.jpeg,.webp"
+                    showUploadList={false}
+                    beforeUpload={(file) => {
+                      if (!/\.(png|jpg|jpeg|webp)$/i.test(file.name)) {
+                        messageApi.error('只能上传 png/jpg/jpeg/webp 图片');
+                        return Upload.LIST_IGNORE;
+                      }
+                      return uploadAppCover(file, 'bannerImage');
+                    }}
+                  >
+                    <Button loading={bannerUploading} disabled={saving}>上传 Banner 图片</Button>
+                  </Upload>
+                  <Form.Item noStyle dependencies={['bannerImage']}>
+                    {({ getFieldValue }) => getFieldValue('bannerImage') ? (
+                      <Button type="text" disabled={bannerUploading || saving} onClick={() => appForm.setFieldValue('bannerImage', '')}>
+                        移除
+                      </Button>
+                    ) : null}
+                  </Form.Item>
+                </Space>
+              </Form.Item>
+              <Form.Item noStyle dependencies={['bannerImage']}>
+                {({ getFieldValue }) => getFieldValue('bannerImage') ? (
+                  <img className="catalog-banner-preview" src={resolveAppAssetUrl(getFieldValue('bannerImage'))} alt="Banner 图片预览" />
+                ) : null}
+              </Form.Item>
+              <Form.Item hidden name="bannerImage"><Input /></Form.Item>
+            </div>
+          ) : null}
           <Form.Item label="详细描述" name="description">
             <Input.TextArea rows={4} placeholder="请输入应用的详细描述" />
           </Form.Item>
@@ -2166,7 +2360,7 @@ const HomePage: React.FC = () => {
                     const { key, name, ...restField } = field;
                     return (
                       <div key={key} className="catalog-app-media-form__block">
-                        <div className="catalog-form-grid">
+                        <div className="catalog-form-grid catalog-form-grid--three">
                           <Form.Item
                             {...restField}
                             label="类型"
@@ -2192,31 +2386,30 @@ const HomePage: React.FC = () => {
                           >
                             <InputNumber min={0} style={{ width: '100%' }} placeholder="可选" />
                           </Form.Item>
-                        </div>
-
-                        <Form.Item
-                          label="资源文件"
-                          tooltip="请先选择类型。本地上传单文件不超过 20MB（含图片与视频）。"
-                        >
-                          <Form.Item noStyle dependencies={[['media', name, 'type']]}>
-                            {({ getFieldValue }) => {
-                              const rowType = getFieldValue(['media', name, 'type']);
-                              const accept =
-                                rowType === 'video' ? '.mp4,.webm,.mov' : '.png,.jpg,.jpeg,.webp,.gif';
-                              const uploading = catalogMediaUploadKey === `${name}-main`;
-                              return (
-                                <Upload
-                                  accept={accept}
-                                  maxCount={1}
-                                  showUploadList={false}
-                                  beforeUpload={(file) => uploadCatalogMediaRow(name, 'main', file)}
-                                >
-                                  <Button loading={uploading}>上传{rowType === 'video' ? '视频' : '图片'}</Button>
-                                </Upload>
-                              );
-                            }}
+                          <Form.Item
+                            label="资源文件"
+                            tooltip="请先选择类型。本地上传单文件不超过 20MB（含图片与视频）。"
+                          >
+                            <Form.Item noStyle dependencies={[['media', name, 'type']]}>
+                              {({ getFieldValue }) => {
+                                const rowType = getFieldValue(['media', name, 'type']);
+                                const accept =
+                                  rowType === 'video' ? '.mp4,.webm,.mov' : '.png,.jpg,.jpeg,.webp,.gif';
+                                const uploading = catalogMediaUploadKey === `${name}-main`;
+                                return (
+                                  <Upload
+                                    accept={accept}
+                                    maxCount={1}
+                                    showUploadList={false}
+                                    beforeUpload={(file) => uploadCatalogMediaRow(name, 'main', file)}
+                                  >
+                                    <Button loading={uploading}>上传{rowType === 'video' ? '视频' : '图片'}</Button>
+                                  </Upload>
+                                );
+                              }}
+                            </Form.Item>
                           </Form.Item>
-                        </Form.Item>
+                        </div>
                         <Form.Item
                           {...restField}
                           name={[name, 'url']}

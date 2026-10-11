@@ -21,6 +21,10 @@ export interface AppItemDocument extends Document {
   summary?: string;
   description?: string;
   cover?: string;
+  bannerImage?: string;
+  sortOrder: number;
+  isPinned: boolean;
+  isFeatured: boolean;
   publisher?: string;
   content?: string;
   /** 结构化图文/视频，用于详情展示（按 sort 排序） */
@@ -58,6 +62,10 @@ const appItemSchema = new Schema<AppItemDocument>(
     summary: { type: String, trim: true },
     description: { type: String, trim: true },
     cover: { type: String, trim: true },
+    bannerImage: { type: String, trim: true },
+    sortOrder: { type: Number, default: 0, validate: Number.isSafeInteger },
+    isPinned: { type: Boolean, default: false },
+    isFeatured: { type: Boolean, default: false },
     publisher: { type: String, trim: true },
     content: { type: String, trim: true },
     media: { type: [appMediaSubSchema], default: [] },
@@ -69,6 +77,7 @@ const appItemSchema = new Schema<AppItemDocument>(
 );
 
 appItemSchema.index({ categoryId: 1, createdAt: -1 });
+appItemSchema.index({ isFeatured: 1, ownerUserId: 1 });
 appItemSchema.index({ name: 'text', summary: 'text', description: 'text', publisher: 'text', content: 'text' });
 
 const AppItemModel: Model<AppItemDocument> =

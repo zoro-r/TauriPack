@@ -25,7 +25,9 @@
 ## Testing Guidelines
 - No formal test framework configured.
 - There is a manual script: `apps/basic-server/test-static.js`.
+- App catalog home regression tests: `cd apps/basic-server && node --test tests/appCatalogHome.test.cjs` (mocked database/filesystem; covers homepage visibility, stable pagination, featured apps, administrator permissions, legacy updates and image cleanup; no live database writes).
 - If you add tests, document how to run them in this file.
+- My orders filtering/pagination tests: `cd apps/basic-server && node --test tests/memberOrdersList.test.cjs` (mocked database/auth; covers user isolation, order type/status filters, stable paging, legacy response compatibility and invalid queries; no live order writes).
 - New-API recharge state-machine regression tests: `cd apps/basic-server && node --test tests/newApiRecharge.test.cjs` (mocked MongoDB/New-API boundaries; no live payments or balance updates).
 - Member account-switch permission/session tests: `cd apps/basic-server && node --test tests/memberDebug.test.cjs` (mocked database; no live account login).
 - Recharge order creation regression tests: `cd apps/basic-server && node --test tests/rechargeOrderCreation.test.cjs` (mocked database/WeChat; checks local-order-first ordering and failure/concurrent-callback handling).
