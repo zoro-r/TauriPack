@@ -12,8 +12,11 @@ import {
   refreshTokens
 } from '@/services/authService';
 import { error as errorResponse, fail, success } from '@/utils/tool';
+import { getBearerToken } from '@/middleware/auth';
+import { verifyAccessToken } from '@/services/authService';
+import { endMemberDebugSession } from '@/services/memberDebugService';
 
-const buildCookieOptions = (ctx: Router.RouterContext, maxAge?: number) => {
+export const buildCookieOptions = (ctx: Router.RouterContext, maxAge?: number) => {
   const forwardedProto = String(ctx.get('x-forwarded-proto') || '').toLowerCase();
   const isSecureRequest = ctx.secure || forwardedProto.includes('https');
   const sameSite = isSecureRequest ? 'none' : 'lax';
@@ -143,6 +146,15 @@ export const logoutToken = async (ctx: Router.RouterContext) => {
   const body = ctx.request.body as { refreshToken?: string } | undefined;
   const refreshTokenValue = body?.refreshToken || String(ctx.cookies.get('refreshToken') || '');
   try {
+    const accessToken = getBearerToken(ctx);
+    if (accessToken) {
+      try {
+        const payload = await verifyAccessToken(accessToken);
+        if (payload.debugSessionId) await endMemberDebugSession(payload.debugSessionId);
+      } catch {
+        // Expired access is still cleared below; it cannot issue a refresh token.
+      }
+    }
     if (refreshTokenValue) {
       await logout(refreshTokenValue);
     }

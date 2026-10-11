@@ -1,12 +1,14 @@
 import crypto from 'crypto';
 import MemberPlanModel from '@/models/MemberPlan';
 import MemberOrderModel from '@/models/MemberOrder';
+import { createOrReuseApiRechargeOrder } from '@/services/rechargeOrderService';
+import { recordWechatPayment, closeLocalWechatOrder, type WechatPaymentResult } from '@/services/wechatPaymentStateService';
 import MemberAccountModel from '@/models/MemberAccount';
 import MemberBenefitLogModel from '@/models/MemberBenefitLog';
 import AppItemModel from '@/models/AppItem';
 import { ensureMemberUploadCategoryId } from '@/services/memberUploadCategoryService';
 import { createNativeWechatPayOrder, queryWechatPayOrder } from '@/services/wechatPayService';
-import { createNewApiRechargeOrder, creditNewApiRecharge } from '@/services/newApiService';
+import { creditNewApiRecharge } from '@/services/newApiService';
 import { creditDocumentOrder, getDocumentRechargeOption } from '@/services/documentService';
 import type { MemberPlanPurchaseLimit, MemberPlanType } from '@/models/MemberPlan';
 
@@ -68,7 +70,6 @@ const amountToCent = (amount: number) => Math.round(amount * 100);
 
 const buildOrderNo = () => `MB${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
-const buildRechargeOrderNo = () => `AR${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 const buildDocumentRechargeOrderNo = () => `DR${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
 const getForceOneFenUserIds = () =>
@@ -202,27 +203,9 @@ const grantMemberBenefit = async (orderId: string) => {
   return order;
 };
 
-const markOrderAsPaid = async (payload: {
-  orderNo: string;
-  transactionId?: string;
-  successTime?: string;
-}) => {
-  const order = await MemberOrderModel.findOne({ orderNo: payload.orderNo });
-  if (!order) {
-    throw new Error('order not found');
-  }
-
-  if (order.status !== 'paid') {
-    payLog('order.markPaid', {
-      orderNo: payload.orderNo,
-      transactionId: payload.transactionId,
-      successTime: payload.successTime
-    });
-    order.status = 'paid';
-    order.wechatTransactionId = payload.transactionId;
-    order.paidAt = payload.successTime ? new Date(payload.successTime) : new Date();
-    await order.save();
-  }
+const markOrderAsPaid = async (payload: WechatPaymentResult, deferRecharge = false) => {
+  const order = await recordWechatPayment(payload);
+  if (order.status !== 'paid' || (deferRecharge && order.orderType === 'recharge')) return order;
 
   if (order.orderType === 'member') {
     await grantMemberBenefit(order._id.toString());
@@ -494,51 +477,7 @@ export const createMemberOrder = async (userId: string, planCode: string) => {
   };
 };
 
-export const createApiRechargeOrder = async (userId: string, amount: number) => {
-  const recharge = await createNewApiRechargeOrder(userId, amount);
-  const orderNo = buildRechargeOrderNo();
-  const forceOneFen = shouldForceOneFen(userId);
-  const payableAmount = forceOneFen ? 0.01 : recharge.amount;
-  const description = `API 账户充值 ${recharge.amount} 元`;
-  const codeUrl = await createNativeWechatPayOrder({
-    outTradeNo: orderNo,
-    description,
-    amountCent: amountToCent(payableAmount)
-  });
-  const order = await MemberOrderModel.create({
-    orderNo,
-    userId,
-    orderType: 'recharge',
-    amount: payableAmount,
-    status: 'pending',
-    payChannel: 'wechat_native',
-    wechatPrepayCodeUrl: codeUrl,
-    expiredAt: new Date(Date.now() + 30 * 60 * 1000),
-    title: 'API 账户充值',
-    description,
-    snapshot: {
-      quota: recharge.quota,
-      remoteUserId: recharge.remoteUserId
-    }
-  });
-  payLog('recharge.create.success', {
-    userId,
-    orderId: order._id.toString(),
-    orderNo,
-    amount: recharge.amount,
-    payableAmount,
-    quota: recharge.quota
-  });
-  return {
-    id: order._id.toString(),
-    orderNo,
-    amount: payableAmount,
-    quota: recharge.quota,
-    status: order.status,
-    payChannel: order.payChannel,
-    codeUrl
-  };
-};
+export const createApiRechargeOrder = createOrReuseApiRechargeOrder;
 
 export const createDocumentCreditOrder = async (userId: string, amount: number) => {
   const recharge = getDocumentRechargeOption(amount);
@@ -611,45 +550,29 @@ export const syncMemberOrderStatus = async (userId: string, orderId: string) => 
     await markOrderAsPaid({
       orderNo: order.orderNo,
       transactionId: wechatOrder.transaction_id,
-      successTime: wechatOrder.success_time
+      successTime: wechatOrder.success_time,
+      appid: wechatOrder.appid, mchid: wechatOrder.mchid, amount: wechatOrder.amount
     });
   } else if (wechatOrder.trade_state === 'CLOSED' || wechatOrder.trade_state === 'PAYERROR') {
     payLog('order.sync.closed', {
       orderNo: order.orderNo,
       tradeState: wechatOrder.trade_state
     });
-    order.status = 'closed';
-    await order.save();
+    await closeLocalWechatOrder(order.orderNo);
   }
 
   return getMemberOrderDetail(userId, orderId);
 };
 
-export const settleMemberOrderByWechatCallback = async (payload: {
-  orderNo: string;
-  tradeState: string;
-  transactionId?: string;
-  successTime?: string;
-}) => {
-  payLog('callback.settle.start', payload);
-  if (payload.tradeState === 'SUCCESS') {
-    await markOrderAsPaid({
-      orderNo: payload.orderNo,
-      transactionId: payload.transactionId,
-      successTime: payload.successTime
-    });
-    return;
+export const settleMemberOrderByWechatCallback = async (payload: WechatPaymentResult & { tradeState: string }) => {
+  if (!payload.appid || !payload.mchid || payload.appid !== process.env.WECHAT_PAY_APPID || payload.mchid !== process.env.WECHAT_PAY_MCHID) {
+    throw new Error('微信支付通知商户或应用不一致');
   }
-
-  if (payload.tradeState === 'CLOSED' || payload.tradeState === 'PAYERROR') {
-    const order = await MemberOrderModel.findOne({ orderNo: payload.orderNo });
-    if (order && order.status === 'pending') {
-      payLog('callback.settle.closed', {
-        orderNo: payload.orderNo,
-        tradeState: payload.tradeState
-      });
-      order.status = 'closed';
-      await order.save();
-    }
+  payLog('callback.settle.start', { orderNo: payload.orderNo, tradeState: payload.tradeState });
+  if (payload.tradeState === 'SUCCESS') {
+    // Persist first and acknowledge quickly. Paid recharge orders are durable recovery work.
+    await markOrderAsPaid(payload, true);
+  } else if (payload.tradeState === 'CLOSED' || payload.tradeState === 'PAYERROR') {
+    await closeLocalWechatOrder(payload.orderNo);
   }
 };

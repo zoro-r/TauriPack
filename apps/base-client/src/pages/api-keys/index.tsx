@@ -84,6 +84,11 @@ interface RechargeOrderItem {
 const qrImageOf = (value: string) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(value)}`;
 
+const getServiceErrorMessage = (value: string) =>
+  /certificate has expired|CERT_HAS_EXPIRED/i.test(value)
+    ? 'API 服务证书已过期，暂时无法同步账户、余额和密钥。请联系管理员更新证书后重试。'
+    : value;
+
 const ApiKeysPage: React.FC = () => {
   const [messageApi, contextHolder] = message.useMessage();
   const [overviewLoading, setOverviewLoading] = useState(true);
@@ -95,6 +100,7 @@ const ApiKeysPage: React.FC = () => {
   const [secretModalOpen, setSecretModalOpen] = useState(false);
   const [overview, setOverview] = useState<NewApiAccountOverview | null>(null);
   const [keys, setKeys] = useState<NewApiTokenItem[]>([]);
+  const [walletError, setWalletError] = useState('');
   const [wallet, setWallet] = useState<ApiWallet | null>(null);
   const [rechargeOrder, setRechargeOrder] = useState<RechargeOrder | null>(null);
   const [rechargeLoading, setRechargeLoading] = useState(false);
@@ -125,9 +131,7 @@ const ApiKeysPage: React.FC = () => {
       if (data.provisioned) {
         setKeyLoading(true);
         try {
-          const keyData = await request<NewApiTokenItem[]>('/api/newapi/keys');
-          setKeys(keyData);
-          await loadWallet();
+          await Promise.allSettled([loadKeys(), loadWallet()]);
         } finally {
           setKeyLoading(false);
         }
@@ -151,8 +155,15 @@ const ApiKeysPage: React.FC = () => {
   };
 
   const loadWallet = async () => {
-    const data = await request<ApiWallet>('/api/newapi/wallet');
-    setWallet(data);
+    try {
+      const data = await request<ApiWallet>('/api/newapi/wallet', { alert: false });
+      setWallet(data);
+      setWalletError('');
+    } catch (error) {
+      setWallet(null);
+      setWalletError(getServiceErrorMessage(error instanceof Error ? error.message : '余额读取失败'));
+      throw error;
+    }
   };
 
   useEffect(() => {
@@ -389,8 +400,9 @@ const ApiKeysPage: React.FC = () => {
               ) : (
                 <Space direction="vertical" size={12} style={{ width: '100%' }}>
                   {overview.account?.status === 'sync_error' && overview.account.lastError ? (
-                    <Alert type="warning" showIcon message={overview.account.lastError} />
+                    <Alert type="warning" showIcon message={getServiceErrorMessage(overview.account.lastError)} />
                   ) : null}
+                  {walletError ? <Alert type="error" showIcon message={walletError} /> : null}
                   <Space direction="vertical" size={16} style={{ width: '100%' }}>
                     <Space size={32} wrap>
                       <Typography.Text>可用额度：<Typography.Text strong>{wallet?.availableQuota ?? '--'}</Typography.Text></Typography.Text>
@@ -407,9 +419,9 @@ const ApiKeysPage: React.FC = () => {
                           </Button>
                         ))}
                     </Space>
-                  ) : (
+                  ) : wallet ? (
                       <Alert type="info" showIcon message="充值服务暂未开放" />
-                  )}
+                  ) : null}
                   <Space.Compact>
                     <InputNumber min={wallet?.customRechargeMinAmount || 1} max={wallet?.customRechargeMaxAmount || 10000} value={customAmount} onChange={setCustomAmount} placeholder="自定义充值金额" prefix="¥" style={{ width: 220 }} />
                     <Button disabled={!customAmount} loading={rechargeLoading} onClick={() => customAmount && createRechargeOrder(customAmount).catch(() => undefined)}>自定义充值</Button>
@@ -488,7 +500,9 @@ const ApiKeysPage: React.FC = () => {
       >
         {rechargeOrder ? (
           <Space direction="vertical" align="center" style={{ width: '100%' }} size={12}>
-            <img src={qrImageOf(rechargeOrder.codeUrl)} alt="微信支付二维码" width={240} height={240} />
+            {rechargeOrder.codeUrl ? (
+              <img src={qrImageOf(rechargeOrder.codeUrl)} alt="微信支付二维码" width={240} height={240} />
+            ) : <Typography.Text>支付已确认，正在确认额度到账，请稍候。</Typography.Text>}
             <Typography.Text>支付 ¥{rechargeOrder.amount}，到账 {rechargeOrder.quota} 额度</Typography.Text>
             <Typography.Text type="secondary">请使用微信扫码完成支付</Typography.Text>
           </Space>

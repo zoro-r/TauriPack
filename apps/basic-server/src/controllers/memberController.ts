@@ -13,7 +13,7 @@ import {
   type WechatPayCallbackPayload,
   verifyWechatPayCallbackSignature
 } from '@/services/wechatPayService';
-import { error as errorResponse, fail, success, wechatSuccess } from '@/utils/tool';
+import { error as errorResponse, fail, success, wechatSuccess, wechatFail } from '@/utils/tool';
 
 const payControllerLog = (tag: string, payload: Record<string, unknown>) => {
   console.info(`[member-controller][${tag}]`, payload);
@@ -110,7 +110,7 @@ export const wechatPayNotify = async (ctx: Router.RouterContext) => {
         hasNonce: Boolean(nonce),
         hasSignature: Boolean(signature)
       });
-      ctx.body = fail('invalid notify headers');
+      ctx.body = wechatFail('invalid notify headers');
       return;
     }
 
@@ -125,7 +125,7 @@ export const wechatPayNotify = async (ctx: Router.RouterContext) => {
         timestamp,
         nonce
       });
-      ctx.body = fail('invalid notify signature');
+      ctx.body = wechatFail('invalid notify signature');
       return;
     }
 
@@ -140,7 +140,8 @@ export const wechatPayNotify = async (ctx: Router.RouterContext) => {
       orderNo: transaction.out_trade_no,
       tradeState: transaction.trade_state,
       transactionId: transaction.transaction_id,
-      successTime: transaction.success_time
+      successTime: transaction.success_time,
+      appid: transaction.appid, mchid: transaction.mchid, amount: transaction.amount
     });
 
     ctx.body = wechatSuccess('成功');
@@ -149,6 +150,6 @@ export const wechatPayNotify = async (ctx: Router.RouterContext) => {
     payControllerLog('notify.error', {
       message: err instanceof Error ? err.message : String(err)
     });
-    ctx.body = fail('notify handle failed');
+    ctx.body = wechatFail('notify handle failed');
   }
 };

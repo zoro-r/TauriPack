@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Avatar, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import request from '../../utils/request';
-import { formatDateTime, nameInitial } from '../../utils/auth';
+import { formatDateTime, nameInitial, type CurrentUser } from '../../utils/auth';
 import { serialColumn } from '../../utils/tableColumns';
 
 const MEMBER_LIST_DEFAULT_PAGE_SIZE = 20;
@@ -85,6 +85,8 @@ const formatMemberStatus = (member?: AdminMemberSummary | null) => {
 
 const MembersPage: React.FC = () => {
   const [messageApi, contextHolder] = message.useMessage();
+  const [enteringUserId, setEnteringUserId] = useState('');
+  const [canDebug, setCanDebug] = useState(false);
   const [users, setUsers] = useState<AdminUserItem[]>([]);
   const [plans, setPlans] = useState<MemberPlanItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -140,6 +142,8 @@ const MembersPage: React.FC = () => {
   };
 
   useEffect(() => {
+    request<{ allowed: boolean }>('/api/admin/member-debug/access', { alert: false })
+      .then((data) => setCanDebug(data.allowed)).catch(() => setCanDebug(false));
     loadUsers().catch((error) => messageApi.error(error?.message || '会员列表加载失败'));
     loadPlans().catch((error) => messageApi.error(error?.message || '套餐列表加载失败'));
   }, []);
@@ -159,6 +163,19 @@ const MembersPage: React.FC = () => {
     const nextFilters: MemberFilters = {};
     setFilters(nextFilters);
     await loadUsers(nextFilters, 1, MEMBER_LIST_DEFAULT_PAGE_SIZE);
+  };
+
+  const enterMemberAccount = async (userId: string) => {
+    setEnteringUserId(userId);
+    try {
+      const data = await request<{ user: CurrentUser }>(`/api/admin/users/${userId}/debug-session`, { method: 'POST' });
+      localStorage.setItem('userInfo', JSON.stringify(data.user));
+      window.location.replace('/api-keys');
+    } catch {
+      // The shared request helper displays the error; preserve the administrator session.
+    } finally {
+      setEnteringUserId('');
+    }
   };
 
   const updateUserRole = async (user: AdminUserItem, role: 'user' | 'admin') => {
@@ -286,6 +303,11 @@ const MembersPage: React.FC = () => {
       title: '操作',
       render: (_, record) => (
         <Space>
+          {canDebug && record.role !== 'admin' ? (
+            <Button size="small" loading={enteringUserId === record.id} disabled={!!enteringUserId && enteringUserId !== record.id} onClick={() => enterMemberAccount(record.id)}>
+              进入账户
+            </Button>
+          ) : null}
           <Button size="small" onClick={() => openMemberAdjust(record)}>
             调整会员
           </Button>

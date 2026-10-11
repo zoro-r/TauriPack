@@ -8,7 +8,10 @@ interface WechatNativeCreateResponse {
   code_url?: string;
 }
 
-interface WechatOrderQueryResponse {
+export interface WechatOrderQueryResponse {
+  appid?: string;
+  mchid?: string;
+  amount?: { total?: number; currency?: string };
   transaction_id?: string;
   trade_state?:
     | 'SUCCESS'
@@ -39,6 +42,9 @@ export interface WechatPayCallbackPayload {
 }
 
 export interface WechatPayCallbackTransaction {
+  appid?: string;
+  mchid?: string;
+  amount?: { total?: number; currency?: string };
   transaction_id: string;
   out_trade_no: string;
   trade_state:
@@ -113,16 +119,22 @@ const requestWechatPay = <T>(
         });
         res.on('end', () => {
           const statusCode = res.statusCode || 500;
-          const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+          let parsed: Record<string, unknown>;
+          try { parsed = raw ? JSON.parse(raw) : {}; }
+          catch { reject(new Error('微信支付返回无效响应')); return; }
           if (statusCode >= 200 && statusCode < 300) {
             resolve(parsed as T);
             return;
           }
-          reject(new Error(String(parsed.message || raw || 'wechat pay request failed')));
+          const error = new Error(String(parsed.message || 'wechat pay request failed')) as Error & { code?: string };
+          error.code = typeof parsed.code === 'string' ? parsed.code : undefined;
+          reject(error);
         });
       }
     );
 
+    const deadline = setTimeout(() => req.destroy(new Error('微信支付请求超时')), 20_000);
+    req.on('close', () => clearTimeout(deadline));
     req.on('error', reject);
     if (payload) {
       req.write(payload);
@@ -134,6 +146,7 @@ export const createNativeWechatPayOrder = async (payload: {
   outTradeNo: string;
   description: string;
   amountCent: number;
+  expiresAt?: Date;
 }) => {
   const appid = getRequiredEnv('WECHAT_PAY_APPID');
   const mchid = getRequiredEnv('WECHAT_PAY_MCHID');
@@ -154,6 +167,7 @@ export const createNativeWechatPayOrder = async (payload: {
       mchid,
       description: payload.description,
       out_trade_no: payload.outTradeNo,
+      ...(payload.expiresAt ? { time_expire: payload.expiresAt.toISOString() } : {}),
       notify_url: notifyUrl,
       amount: {
         total: payload.amountCent,
@@ -192,6 +206,12 @@ export const queryWechatPayOrder = async (outTradeNo: string) => {
     transactionId: result.transaction_id
   });
   return result;
+};
+
+export const closeWechatPayOrder = async (outTradeNo: string) => {
+  await requestWechatPay('POST', `/v3/pay/transactions/out-trade-no/${encodeURIComponent(outTradeNo)}/close`, {
+    mchid: getRequiredEnv('WECHAT_PAY_MCHID')
+  });
 };
 
 export const verifyWechatPayCallbackSignature = (payload: {

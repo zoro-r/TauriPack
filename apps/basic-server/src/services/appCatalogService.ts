@@ -4,6 +4,7 @@ import path from 'path';
 import AppCategoryModel from '@/models/AppCategory';
 import AppItemModel from '@/models/AppItem';
 import UserAppEntitlementModel from '@/models/UserAppEntitlement';
+import AppTemporaryLinkModel from '@/models/AppTemporaryLink';
 import { getMemberAppQuota, isMemberActive } from '@/services/memberService';
 import { MEMBER_UPLOAD_CATEGORY_SLUG } from '@/services/memberUploadCategoryService';
 
@@ -538,6 +539,10 @@ export const deleteApp = async (id: string) => {
   if (!app) {
     throw new Error('app not found');
   }
+  await AppTemporaryLinkModel.updateMany(
+    { appId: app._id, status: 'active' },
+    { $set: { status: 'revoked', revokedAt: new Date() } }
+  );
   const uploadDir = path.join(appUploadRoot, app.slug);
   if (fs.existsSync(uploadDir)) {
     fs.rmSync(uploadDir, { recursive: true, force: true });

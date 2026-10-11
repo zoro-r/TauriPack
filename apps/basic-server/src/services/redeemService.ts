@@ -93,7 +93,7 @@ const buildGrantSnapshot = async (grantType: 'member' | 'app', input: RedeemBatc
     throw new Error('appId is required');
   }
   const appDurationDays = Number(input.appDurationDays) || 0;
-  if (appDurationDays <= 0) {
+  if (!Number.isInteger(appDurationDays) || appDurationDays <= 0 || appDurationDays > 3650) {
     throw new Error('appDurationDays is required');
   }
   const app = await AppItemModel.findById(input.appId).lean();
@@ -281,7 +281,7 @@ export const listRedeemCodes = async (query: RedeemCodeListQuery & { page?: stri
   page = Math.min(page, totalPages);
 
   const list = await RedeemCodeModel.find(filter)
-    .populate('batchId', 'name status userVisibleTitle expiresAt grantType')
+    .populate('batchId', 'name status userVisibleTitle expiresAt grantType grantSnapshot')
     .populate('usedBy', 'nickname wechatOpenId')
     .sort({ createdAt: -1 })
     .skip((page - 1) * pageSize)

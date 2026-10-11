@@ -6,6 +6,7 @@ export interface NewApiRechargeDocument extends Document {
   remoteUserId: string;
   quota: number;
   status: 'pending' | 'crediting' | 'credited' | 'failed';
+  retrySafe?: boolean;
   error?: string;
   creditedAt?: Date;
   createdAt: Date;
@@ -19,6 +20,7 @@ const newApiRechargeSchema = new Schema<NewApiRechargeDocument>(
     remoteUserId: { type: String, required: true, index: true },
     quota: { type: Number, required: true, min: 1 },
     status: { type: String, enum: ['pending', 'crediting', 'credited', 'failed'], default: 'pending', index: true },
+    retrySafe: { type: Boolean, default: false },
     error: { type: String },
     creditedAt: { type: Date }
   },

@@ -1,5 +1,4 @@
 import Koa from 'koa';
-import bodyParser from 'koa-bodyparser';
 import cors from '@koa/cors';
 import logger from 'koa-logger';
 import dotenv from 'dotenv';
@@ -8,12 +7,19 @@ import path from 'path';
 import fs from 'fs';
 import serve from 'koa-static';
 import { initRouter } from '@/routers';
-import { fail, wechatFail } from '@/utils/tool';
+import { fail } from '@/utils/tool';
+import { wechatNotifyBody } from '@/middleware/wechatNotifyBody';
 import { requireUser } from '@/middleware/auth';
 import AppItemModel from '@/models/AppItem';
 import MemberAccountModel from '@/models/MemberAccount';
 import UserAppEntitlementModel from '@/models/UserAppEntitlement';
 import { ensureRedeemCodeUniqueIndex } from '@/models/RedeemCode';
+import { startNewApiRechargeRecovery } from '@/services/newApiRechargeRecoveryService';
+import { temporaryAppShareMiddleware } from '@/middleware/temporaryAppShare';
+import {
+  hasValidTemporaryAppAccess,
+  temporaryAppCookieName
+} from '@/services/appTemporaryLinkService';
 
 dotenv.config();
 
@@ -46,6 +52,7 @@ mongoose
   .then(async () => {
     await ensureRedeemCodeUniqueIndex();
     console.log('MongoDB connected');
+    await startNewApiRechargeRecovery();
   })
   .catch((error) => {
     console.error('MongoDB connection failed:', error);
@@ -73,30 +80,8 @@ app.use(
   })
 );
 app.use(logger());
-app.use(async (ctx, next) => {
-  if (ctx.path === '/api/pay/wechat/notify' && ctx.method.toUpperCase() === 'POST') {
-    let rawBody = '';
-    await new Promise<void>((resolve, reject) => {
-      ctx.req.on('data', (chunk) => {
-        rawBody += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-      });
-      ctx.req.on('end', () => resolve());
-      ctx.req.on('error', reject);
-    });
-
-    ctx.state.rawBody = rawBody;
-    try {
-      ctx.request.body = rawBody ? JSON.parse(rawBody) : {};
-    } catch (error) {
-      ctx.body = wechatFail('Invalid notify payload');
-      return;
-    }
-    await next();
-    return;
-  }
-
-  return bodyParser()(ctx, next);
-});
+app.use(temporaryAppShareMiddleware);
+app.use(wechatNotifyBody);
 
 initRouter(app);
 
@@ -118,9 +103,12 @@ app.use(async (ctx, next) => {
           return;
         }
 
-        /** 会员自助上架应用在库中有 ownerUserId；其静态站点对访客直接开放（不做登录/会员/授权校验） */
-        const isMemberSelfListed = Boolean(appItem.ownerUserId);
-        if (isMemberSelfListed) {
+        const temporaryToken = ctx.cookies.get(temporaryAppCookieName(appItem._id.toString()));
+        const hasTemporaryAccess = await hasValidTemporaryAppAccess(
+          appItem._id.toString(),
+          temporaryToken
+        );
+        if (hasTemporaryAccess) {
           const relativePath = ctx.path.replace('/static/', '');
           ctx.path = '/' + relativePath;
           return serve(staticPath)(ctx, next);

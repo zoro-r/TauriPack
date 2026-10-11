@@ -18,6 +18,13 @@ import {
 import { appCatalogMediaUpload } from '@/services/appCatalogMediaService';
 import { appCoverUpload } from '@/services/appCoverService';
 import { appPackageUpload } from '@/services/appPackageService';
+import {
+  deleteAppTemporaryLink,
+  getAppTemporaryLinks,
+  getTemporaryLinkPreview,
+  postAppTemporaryLink,
+  postTemporaryLinkClaim
+} from '@/controllers/appTemporaryLinkController';
 
 export default function appCatalogRouter(router: Router) {
   router.get('/api/app-categories', getCategoryList);
@@ -27,6 +34,11 @@ export default function appCatalogRouter(router: Router) {
 
   router.get('/api/apps', getAppList);
   router.get('/api/apps/:id/access', getAppAccess);
+  router.get('/api/apps/:id/temporary-links', getAppTemporaryLinks);
+  router.post('/api/apps/:id/temporary-links', postAppTemporaryLink);
+  router.delete('/api/apps/:id/temporary-links/:linkId', deleteAppTemporaryLink);
+  router.post('/api/temporary-links/preview', getTemporaryLinkPreview);
+  router.post('/api/temporary-links/claim', postTemporaryLinkClaim);
   router.get('/api/apps/:id', getAppById);
   router.post('/api/apps/upload-cover', appCoverUpload.single('file'), postAppCover);
   router.post(

@@ -15,6 +15,12 @@ export interface MemberOrderDocument extends Document {
   payChannel: MemberPayChannel;
   wechatPrepayCodeUrl?: string;
   wechatTransactionId?: string;
+  rechargeKey?: string;
+  rechargeSlot?: number;
+  paymentAttemptId?: string;
+  paymentPreparingUntil?: Date;
+  paymentAttempted?: boolean;
+  paymentCheckedAt?: Date;
   paidAt?: Date;
   expiredAt?: Date;
   title: string;
@@ -51,6 +57,12 @@ const memberOrderSchema = new Schema<MemberOrderDocument>(
     },
     wechatPrepayCodeUrl: { type: String },
     wechatTransactionId: { type: String, index: true },
+    rechargeKey: String,
+    rechargeSlot: Number,
+    paymentAttemptId: String,
+    paymentPreparingUntil: Date,
+    paymentAttempted: Boolean,
+    paymentCheckedAt: Date,
     paidAt: { type: Date },
     expiredAt: { type: Date, index: true },
     title: { type: String, required: true, trim: true },
@@ -62,6 +74,14 @@ const memberOrderSchema = new Schema<MemberOrderDocument>(
 );
 
 memberOrderSchema.index({ userId: 1, createdAt: -1 });
+memberOrderSchema.index({ userId: 1, rechargeKey: 1 }, {
+  unique: true,
+  partialFilterExpression: { orderType: 'recharge', status: 'pending', rechargeKey: { $type: 'string' } }
+});
+memberOrderSchema.index({ userId: 1, rechargeSlot: 1 }, {
+  unique: true,
+  partialFilterExpression: { orderType: 'recharge', status: 'pending', rechargeSlot: { $type: 'number' } }
+});
 memberOrderSchema.index({ orderType: 1, bizId: 1, createdAt: -1 });
 memberOrderSchema.index(
   { userId: 1, purchaseKey: 1 },

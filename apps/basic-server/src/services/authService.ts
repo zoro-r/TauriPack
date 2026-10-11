@@ -6,6 +6,7 @@ import UserModel from '@/models/User';
 import WechatLoginStateModel, { type WechatLoginStatus } from '@/models/WechatLoginState';
 import RefreshTokenModel from '@/models/RefreshToken';
 import UserSessionModel from '@/models/UserSession';
+import { verifyMemberDebugSession } from '@/services/memberDebugService';
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -364,7 +365,7 @@ export const getCurrentUser = async (accessToken: string) => {
   if (!user) {
     throw new Error('User not found');
   }
-  const role = user.role === 'admin' || shouldBeAdmin(user.wechatOpenId) ? 'admin' : 'user';
+  const role = !payload.debugSessionId && (user.role === 'admin' || shouldBeAdmin(user.wechatOpenId)) ? 'admin' : 'user';
   if (role === 'admin' && user.role !== 'admin') {
     await UserModel.updateOne({ _id: user._id }, { $set: { role: 'admin' } });
   }
@@ -386,7 +387,7 @@ export const getNavMenus = async (accessToken?: string) => {
   try {
     const payload = await verifyAccessToken(accessToken);
     const user = await UserModel.findById(payload.sub).lean();
-    const role = user && (user.role === 'admin' || shouldBeAdmin(user.wechatOpenId)) ? 'admin' : 'user';
+    const role = !payload.debugSessionId && user && (user.role === 'admin' || shouldBeAdmin(user.wechatOpenId)) ? 'admin' : 'user';
     if (user && role === 'admin' && user.role !== 'admin') {
       await UserModel.updateOne({ _id: user._id }, { $set: { role: 'admin' } });
     }
@@ -412,9 +413,14 @@ export const verifyAccessToken = async (accessToken: string) => {
     sub?: string;
     sid?: string;
     type?: string;
+    debugSessionId?: string;
   };
   if (payload.type !== 'access' || !payload.sub || !payload.sid) {
     throw new Error('Invalid access token');
+  }
+  if (payload.debugSessionId) {
+    await verifyMemberDebugSession({ sub: payload.sub, sid: payload.sid, debugSessionId: payload.debugSessionId });
+    return payload as JwtPayload & { sub: string; sid: string; type: string; debugSessionId?: string };
   }
   const session = await UserSessionModel.findOne({
     sessionId: payload.sid,
@@ -428,5 +434,5 @@ export const verifyAccessToken = async (accessToken: string) => {
     { sessionId: payload.sid },
     { $set: { lastActiveAt: new Date() } }
   );
-  return payload as JwtPayload & { sub: string; sid: string; type: string };
+  return payload as JwtPayload & { sub: string; sid: string; type: string; debugSessionId?: string };
 };

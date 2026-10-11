@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, Descriptions, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import request from '../../utils/request';
@@ -97,6 +97,7 @@ const OrdersPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [syncingOrderId, setSyncingOrderId] = useState<string>();
+  const syncingRef = useRef(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<AdminOrderItem | null>(null);
   const [filters, setFilters] = useState<OrderFilters>({
@@ -153,24 +154,37 @@ const OrdersPage: React.FC = () => {
   };
 
   const syncOrderStatus = async (order: AdminOrderItem) => {
-    if (order.payChannel !== 'wechat_native') {
+    if (order.payChannel !== 'wechat_native' || syncingRef.current) {
       return;
     }
+    syncingRef.current = true;
     setSyncingOrderId(order._id);
     try {
-      await request(`/api/admin/member/orders/${order._id}/sync`, {
+      const result = await request<AdminOrderItem>(`/api/admin/member/orders/${order._id}/sync`, {
         method: 'POST',
         alert: false
       });
-      messageApi.success('订单状态已同步');
-      if (selectedOrder?._id === order._id) {
-        const detail = await request<AdminOrderItem>(`/api/admin/member/orders/${order._id}`);
-        setSelectedOrder(detail);
+      if (result.status === 'paid') {
+        messageApi.success('状态已刷新：已支付');
+      } else if (result.status === 'pending') {
+        messageApi.info('微信尚未确认支付，订单仍为待支付');
+      } else {
+        messageApi.info(`状态已刷新：${orderStatusLabelOf(result.status)}`);
       }
-      await loadOrders(filters, listPagination.current, listPagination.pageSize);
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : '订单状态同步失败');
+      messageApi.error(error instanceof Error ? error.message : '订单状态刷新失败');
     } finally {
+      // Payment may already be persisted even if fulfilling the recharge failed.
+      try {
+        await loadOrders(filters, listPagination.current, listPagination.pageSize);
+        if (selectedOrder?._id === order._id) {
+          const detail = await request<AdminOrderItem>(`/api/admin/member/orders/${order._id}`, { alert: false });
+          setSelectedOrder(current => current?._id === order._id ? detail : current);
+        }
+      } catch {
+        messageApi.warning('订单信息更新失败，请重新加载订单');
+      }
+      syncingRef.current = false;
       setSyncingOrderId(undefined);
     }
   };
@@ -251,9 +265,10 @@ const OrdersPage: React.FC = () => {
             <Button
               size="small"
               loading={syncingOrderId === record._id}
+              disabled={Boolean(syncingOrderId && syncingOrderId !== record._id)}
               onClick={() => syncOrderStatus(record)}
             >
-              同步状态
+              刷新状态
             </Button>
           ) : null}
         </Space>
@@ -363,9 +378,10 @@ const OrdersPage: React.FC = () => {
                   key="sync"
                   type="primary"
                   loading={syncingOrderId === selectedOrder._id}
+                  disabled={Boolean(syncingOrderId && syncingOrderId !== selectedOrder._id)}
                   onClick={() => syncOrderStatus(selectedOrder)}
                 >
-                  同步状态
+                  刷新状态
                 </Button>
               ]
             : [

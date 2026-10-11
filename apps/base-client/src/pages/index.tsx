@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Button,
+  DatePicker,
   Divider,
   Empty,
   Form,
@@ -14,12 +15,14 @@ import {
   Space,
   Spin,
   Switch,
+  Tag,
   Tabs,
   Tooltip,
   Typography,
   Upload,
   message
 } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
 import type { UploadFile } from 'antd/es/upload/interface';
 import request from '../utils/request';
 import {
@@ -178,6 +181,23 @@ interface AppsPagedResponse {
   total: number;
   page: number;
   pageSize: number;
+}
+
+interface AppTemporaryLinkItem {
+  _id: string;
+  appId: string;
+  expiresAt: string;
+  status: 'active' | 'revoked';
+  remark?: string;
+  visitCount: number;
+  lastVisitedAt?: string;
+  createdAt: string;
+  sharePath?: string;
+}
+
+interface AppTemporaryLinkFormValues {
+  expiresAt: Dayjs;
+  remark?: string;
 }
 
 /** 与后端 `memberUploadCategoryService` 中 slug 一致 */
@@ -547,6 +567,11 @@ const HomePage: React.FC = () => {
   const [editingCategory, setEditingCategory] = useState<AppCategory | null>(null);
   const [editingApp, setEditingApp] = useState<AppItem | null>(null);
   const [selectedApp, setSelectedApp] = useState<AppItem | null>(null);
+  const [temporaryLinkApp, setTemporaryLinkApp] = useState<AppItem | null>(null);
+  const [temporaryLinks, setTemporaryLinks] = useState<AppTemporaryLinkItem[]>([]);
+  const [temporaryLinksLoading, setTemporaryLinksLoading] = useState(false);
+  const [temporaryLinkSaving, setTemporaryLinkSaving] = useState(false);
+  const [latestTemporaryShareUrl, setLatestTemporaryShareUrl] = useState('');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [memberInfo, setMemberInfo] = useState<MemberInfo | null>(null);
   const [memberPlans, setMemberPlans] = useState<MemberPlan[]>([]);
@@ -584,6 +609,7 @@ const HomePage: React.FC = () => {
   const catalogCategoryHydratedRef = useRef(false);
   const [categoryForm] = Form.useForm<CategoryFormValues>();
   const [appForm] = Form.useForm<AppFormValues>();
+  const [temporaryLinkForm] = Form.useForm<AppTemporaryLinkFormValues>();
   const isAdmin = currentUser?.role === 'admin';
 
   const applyAppsPageResponse = (data: AppsPagedResponse) => {
@@ -1234,6 +1260,59 @@ const HomePage: React.FC = () => {
     fetchMemberInfo().catch(() => undefined);
   };
 
+  const loadTemporaryLinks = async (appId: string) => {
+    setTemporaryLinksLoading(true);
+    try {
+      setTemporaryLinks(await request<AppTemporaryLinkItem[]>(`/api/apps/${appId}/temporary-links`));
+    } finally {
+      setTemporaryLinksLoading(false);
+    }
+  };
+
+  const openTemporaryLinkManager = async (app: AppItem) => {
+    setTemporaryLinkApp(app);
+    setLatestTemporaryShareUrl('');
+    temporaryLinkForm.setFieldsValue({
+      expiresAt: dayjs().add(1, 'day'),
+      remark: ''
+    });
+    await loadTemporaryLinks(app._id);
+  };
+
+  const createTemporaryLink = async () => {
+    if (!temporaryLinkApp) return;
+    const values = await temporaryLinkForm.validateFields();
+    setTemporaryLinkSaving(true);
+    try {
+      const created = await request<AppTemporaryLinkItem>(
+        `/api/apps/${temporaryLinkApp._id}/temporary-links`,
+        {
+          method: 'POST',
+          data: {
+            expiresAt: values.expiresAt.toISOString(),
+            remark: values.remark
+          }
+        }
+      );
+      const shareUrl = `${window.location.origin}${created.sharePath}`;
+      setLatestTemporaryShareUrl(shareUrl);
+      await navigator.clipboard?.writeText(shareUrl).catch(() => undefined);
+      messageApi.success('临时链接已生成并复制');
+      await loadTemporaryLinks(temporaryLinkApp._id);
+    } finally {
+      setTemporaryLinkSaving(false);
+    }
+  };
+
+  const revokeTemporaryLink = async (linkId: string) => {
+    if (!temporaryLinkApp) return;
+    await request(`/api/apps/${temporaryLinkApp._id}/temporary-links/${linkId}`, {
+      method: 'DELETE'
+    });
+    messageApi.success('临时链接已失效');
+    await loadTemporaryLinks(temporaryLinkApp._id);
+  };
+
   const handleVisitApp = async (app: AppItem) => {
     if (!app.entryUrl) {
       messageApi.info('当前应用暂无访问入口');
@@ -1497,6 +1576,12 @@ const HomePage: React.FC = () => {
                     编辑
                   </Button>
                 ) : null}
+                {selectedApp.entryUrl &&
+                (isAdmin || Boolean(currentUser?.id && selectedApp.ownerUserId === currentUser.id)) ? (
+                  <Button key="temporary-link" onClick={() => void openTemporaryLinkManager(selectedApp)}>
+                    临时链接
+                  </Button>
+                ) : null}
                 {selectedApp.entryUrl ? (
                   <Button key="visit" type="primary" onClick={() => void handleVisitApp(selectedApp)}>
                     访问应用
@@ -1631,6 +1716,78 @@ const HomePage: React.FC = () => {
             </div>
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        title={`临时链接：${temporaryLinkApp?.name || ''}`}
+        open={!!temporaryLinkApp}
+        onCancel={() => setTemporaryLinkApp(null)}
+        footer={null}
+        width={680}
+        destroyOnClose
+      >
+        <Form form={temporaryLinkForm} layout="vertical" onFinish={createTemporaryLink}>
+          <div className="temporary-link-form-grid">
+            <Form.Item
+              label="失效时间"
+              name="expiresAt"
+              rules={[{ required: true, message: '请选择失效时间' }]}
+            >
+              <DatePicker
+                showTime
+                format="YYYY-MM-DD HH:mm"
+                style={{ width: '100%' }}
+                disabledDate={(date) => date.isBefore(dayjs().startOf('day')) || date.isAfter(dayjs().add(30, 'day').endOf('day'))}
+              />
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input placeholder="例如：发给客户体验" maxLength={100} />
+            </Form.Item>
+          </div>
+          <Button type="primary" htmlType="submit" loading={temporaryLinkSaving}>
+            生成并复制链接
+          </Button>
+        </Form>
+
+        {latestTemporaryShareUrl ? (
+          <div className="temporary-link-created">
+            <Typography.Text strong>新链接（请立即保存）</Typography.Text>
+            <Space.Compact block>
+              <Input readOnly value={latestTemporaryShareUrl} />
+              <Button onClick={() => void navigator.clipboard?.writeText(latestTemporaryShareUrl)}>复制</Button>
+            </Space.Compact>
+          </div>
+        ) : null}
+
+        <Divider />
+        <Typography.Title level={5}>历史链接</Typography.Title>
+        <Spin spinning={temporaryLinksLoading}>
+          <div className="temporary-link-list">
+            {temporaryLinks.length ? temporaryLinks.map((link) => {
+              const expired = new Date(link.expiresAt).getTime() <= Date.now();
+              const active = link.status === 'active' && !expired;
+              return (
+                <div className="temporary-link-item" key={link._id}>
+                  <div>
+                    <Space wrap>
+                      <Tag color={active ? 'green' : 'default'}>{active ? '有效' : link.status === 'revoked' ? '已撤销' : '已过期'}</Tag>
+                      <Typography.Text>{link.remark || '未填写备注'}</Typography.Text>
+                    </Space>
+                    <div className="temporary-link-meta">
+                      失效：{formatDateTime(link.expiresAt)} · 访问 {link.visitCount || 0} 次
+                      {link.lastVisitedAt ? ` · 最近 ${formatDateTime(link.lastVisitedAt)}` : ''}
+                    </div>
+                  </div>
+                  {active ? (
+                    <Popconfirm title="确认让该链接立即失效？" onConfirm={() => revokeTemporaryLink(link._id)}>
+                      <Button danger size="small">立即失效</Button>
+                    </Popconfirm>
+                  ) : null}
+                </div>
+              );
+            }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有临时链接" />}
+          </div>
+        </Spin>
       </Modal>
 
       <Modal

@@ -26,6 +26,10 @@
 - No formal test framework configured.
 - There is a manual script: `apps/basic-server/test-static.js`.
 - If you add tests, document how to run them in this file.
+- New-API recharge state-machine regression tests: `cd apps/basic-server && node --test tests/newApiRecharge.test.cjs` (mocked MongoDB/New-API boundaries; no live payments or balance updates).
+- Member account-switch permission/session tests: `cd apps/basic-server && node --test tests/memberDebug.test.cjs` (mocked database; no live account login).
+- Recharge order creation regression tests: `cd apps/basic-server && node --test tests/rechargeOrderCreation.test.cjs` (mocked database/WeChat; checks local-order-first ordering and failure/concurrent-callback handling).
+- WeChat callback/recovery regression tests: `cd apps/basic-server && node --test tests/wechatPaymentConcurrency.test.cjs tests/wechatNotifyTransport.test.cjs` (mocked database/WeChat plus local HTTP requests; covers duplicate callbacks, payment/close races, lost notifications and retry responses).
 
 ## API Response Rules (basic-server)
 - All controller responses must be returned via `apps/basic-server/src/utils/tool.ts` helpers (`success`, `fail`, `error`, `wechatSuccess`, `wechatFail`).

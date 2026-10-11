@@ -14,8 +14,11 @@ import {
   type MemberPlanInput,
   updateMemberPlan
 } from '@/services/memberService';
-import { requireAdmin } from '@/middleware/auth';
+import { requireAdmin, getBearerToken } from '@/middleware/auth';
+import { verifyAccessToken } from '@/services/authService';
+import { canDebugMembers, createMemberDebugSession } from '@/services/memberDebugService';
 import { error as errorResponse, fail, success } from '@/utils/tool';
+import { buildCookieOptions } from '@/controllers/authController';
 
 export const getAdminUsers = async (ctx: Router.RouterContext) => {
   try {
@@ -129,4 +132,26 @@ export const putAdminMemberPlan = async (ctx: Router.RouterContext) => {
   } catch (err) {
     ctx.body = errorResponse('update member plan failed', err);
   }
+};
+
+export const getMemberDebugAccess = async (ctx: Router.RouterContext) => {
+  try {
+    const actor = await requireAdmin(ctx);
+    ctx.body = success({ allowed: canDebugMembers(actor) });
+  } catch (err) { ctx.body = errorResponse('无法检查会员访问权限', err); }
+};
+
+export const postMemberDebugSession = async (ctx: Router.RouterContext) => {
+  try {
+    const actor = await requireAdmin(ctx);
+    const payload = await verifyAccessToken(getBearerToken(ctx));
+    if (payload.debugSessionId) throw new Error('不能在会员访问中再次切换账户');
+    const session = await createMemberDebugSession({
+      actorUserId: String(actor._id), parentSessionId: payload.sid,
+      targetUserId: String(ctx.params.id || ''), ip: ctx.ip, userAgent: ctx.get('user-agent')
+    });
+    ctx.cookies.set('accessToken', session.accessToken, buildCookieOptions(ctx, session.expiresAt.getTime() - Date.now()));
+    ctx.cookies.set('refreshToken', '', buildCookieOptions(ctx, 0));
+    ctx.body = success({ user: session.user, expiresAt: session.expiresAt });
+  } catch (err) { ctx.body = errorResponse('进入会员账户失败', err); }
 };

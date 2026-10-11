@@ -17,7 +17,7 @@ import {
   message
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import dayjs from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 import request, { apiBase } from '../../utils/request';
 import { formatDateTime } from '../../utils/auth';
 import { serialColumn } from '../../utils/tableColumns';
@@ -61,7 +61,7 @@ interface RedeemBatchItem {
   };
   userVisibleTitle: string;
   userVisibleDescription?: string;
-  expiresAt?: string;
+  expiresAt?: Dayjs;
   totalCount: number;
   usedCount: number;
   remark?: string;
@@ -81,6 +81,8 @@ interface RedeemCodeItem {
         name?: string;
         userVisibleTitle?: string;
         expiresAt?: string;
+        grantType?: RedeemBatchItem['grantType'];
+        grantSnapshot?: RedeemBatchItem['grantSnapshot'];
       };
   usedBy?:
     | string
@@ -152,6 +154,14 @@ const codeStatusLabelOf = (value: RedeemCodeItem['status']) => {
 };
 
 const grantTypeLabelOf = (value: RedeemBatchItem['grantType']) => (value === 'app' ? '单应用' : '会员');
+
+const codeDurationLabelOf = (record: RedeemCodeItem) => {
+  if (!record.batchId || typeof record.batchId === 'string') return '--';
+  const durationDays = record.batchId.grantType === 'app'
+    ? record.batchId.grantSnapshot?.appDurationDays
+    : record.batchId.grantSnapshot?.durationDays ?? record.batchId.grantSnapshot?.appDurationDays;
+  return durationDays ? `${durationDays} 天` : '--';
+};
 
 const RedeemCodesPage: React.FC = () => {
   const [messageApi, contextHolder] = message.useMessage();
@@ -355,7 +365,7 @@ const RedeemCodesPage: React.FC = () => {
     const values = await batchForm.validateFields();
     const payload = {
       ...values,
-      expiresAt: values.expiresAt ? dayjs(values.expiresAt).format('YYYY-MM-DD') : undefined
+      expiresAt: values.expiresAt ? values.expiresAt.toISOString() : undefined
     };
     if (editingBatch) {
       await request(`/api/admin/redeem/batches/${editingBatch._id}`, {
@@ -457,6 +467,11 @@ const RedeemCodesPage: React.FC = () => {
         typeof record.batchId === 'string' ? '--' : record.batchId?.name || record.batchId?.userVisibleTitle || '--'
     },
     {
+      title: '兑换时长',
+      width: 110,
+      render: (_, record) => codeDurationLabelOf(record)
+    },
+    {
       title: '使用人',
       render: (_, record) =>
         typeof record.usedBy === 'string' ? '--' : record.usedBy?.nickname || record.usedBy?.wechatOpenId || '--'
@@ -556,7 +571,7 @@ const RedeemCodesPage: React.FC = () => {
               void loadAll(filters, page, pageSize);
             }
           }}
-          scroll={{ x: 1040 }}
+          scroll={{ x: 1150 }}
         />
       </main>
 
@@ -646,8 +661,13 @@ const RedeemCodesPage: React.FC = () => {
                     </Form.Item>
                   </Col>
                   <Col span={12}>
-                    <Form.Item label="兑换时长" name="appDurationDays" rules={[{ required: true, message: '请输入兑换时长' }]}>
-                      <InputNumber min={1} style={{ width: '100%' }} addonAfter="天" />
+                    <Form.Item
+                      label="兑换后应用有效期"
+                      name="appDurationDays"
+                      tooltip="用户兑换后可使用该应用的天数；重复兑换会在当前到期时间上顺延。"
+                      rules={[{ required: true, message: '请输入应用有效期' }]}
+                    >
+                      <InputNumber min={1} max={3650} precision={0} style={{ width: '100%' }} addonAfter="天" />
                     </Form.Item>
                   </Col>
                 </Row>
@@ -675,8 +695,12 @@ const RedeemCodesPage: React.FC = () => {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="过期日期" name="expiresAt">
-                <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+              <Form.Item
+                label="兑换截止时间"
+                name="expiresAt"
+                tooltip="超过该时间后兑换码不能再兑换；与兑换后的应用有效期互相独立。"
+              >
+                <DatePicker showTime style={{ width: '100%' }} format="YYYY-MM-DD HH:mm" />
               </Form.Item>
             </Col>
           </Row>

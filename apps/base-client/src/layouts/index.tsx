@@ -16,7 +16,7 @@ import {
 import '../pages/index.css';
 
 const defaultMenus: NavMenuItem[] = [{ key: 'apps', label: '应用广场', path: '/' }];
-const plainLayoutPaths = ['/auth', '/forbidden', '/login', '/success'];
+const plainLayoutPaths = ['/auth', '/forbidden', '/login', '/success', '/app-share'];
 const qrImageOf = (value: string) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(value)}`;
 interface MemberPlan {

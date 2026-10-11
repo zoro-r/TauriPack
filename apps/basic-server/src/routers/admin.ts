@@ -1,5 +1,7 @@
 import type Router from '@koa/router';
 import {
+  getMemberDebugAccess,
+  postMemberDebugSession,
   getAdminOrder,
   getAdminOrders,
   getAdminMemberPlans,
@@ -13,6 +15,8 @@ import {
 } from '@/controllers/adminController';
 
 export default function adminRouter(router: Router) {
+  router.get('/api/admin/member-debug/access', getMemberDebugAccess);
+  router.post('/api/admin/users/:id/debug-session', postMemberDebugSession);
   router.get('/api/admin/users', getAdminUsers);
   router.get('/api/admin/users/:id', getAdminUser);
   router.put('/api/admin/users/:id/role', putAdminUserRole);
