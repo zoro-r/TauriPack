@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Avatar, Button, Dropdown, Form, Input, MenuProps, Modal, Space, Table, Tag, Tabs, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Outlet, history, useLocation } from '@umijs/max';
@@ -146,6 +146,8 @@ const RootLayout: React.FC = () => {
   const [userOrdersOpen, setUserOrdersOpen] = useState(false);
   const [userOrdersLoading, setUserOrdersLoading] = useState(false);
   const [userOrders, setUserOrders] = useState<UserOrderItem[]>([]);
+  const [refreshingUserOrderId, setRefreshingUserOrderId] = useState<string>();
+  const refreshingUserOrderRef = useRef(false);
   const [redeemModalOpen, setRedeemModalOpen] = useState(false);
   const [redeemLoading, setRedeemLoading] = useState(false);
   const [redeemPreviewLoading, setRedeemPreviewLoading] = useState(false);
@@ -373,13 +375,42 @@ const RootLayout: React.FC = () => {
     messageApi.success('已退出当前账号');
   };
 
-  const loadUserOrders = async () => {
+  const loadUserOrders = async (alert = true) => {
     setUserOrdersLoading(true);
     try {
-      const data = await request<UserOrderItem[]>('/api/member/orders');
+      const data = await request<UserOrderItem[]>('/api/member/orders', { alert });
       setUserOrders(data);
     } finally {
       setUserOrdersLoading(false);
+    }
+  };
+
+  const refreshUserOrderStatus = async (order: UserOrderItem) => {
+    if (order.payChannel !== 'wechat_native' || refreshingUserOrderRef.current) return;
+    refreshingUserOrderRef.current = true;
+    setRefreshingUserOrderId(order._id);
+    try {
+      const result = await request<UserOrderItem>(`/api/member/orders/${order._id}`, { alert: false });
+      setUserOrders(current => current.map(item => item._id === result._id ? result : item));
+      if (result.status === 'paid') {
+        messageApi.success('状态已刷新：已支付');
+        await fetchMemberInfo().catch(() => undefined);
+      } else if (result.status === 'pending') {
+        messageApi.info('微信尚未确认支付，订单仍为待支付');
+      } else {
+        messageApi.info(result.status === 'refunded' ? '状态已刷新：已退款' : '状态已刷新：已关闭');
+      }
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '订单状态刷新失败');
+    } finally {
+      // The payment may be saved even when the subsequent quota credit needs reconciliation.
+      try {
+        await loadUserOrders(false);
+      } catch {
+        messageApi.warning('订单信息更新失败，请重新打开我的订单');
+      }
+      refreshingUserOrderRef.current = false;
+      setRefreshingUserOrderId(undefined);
     }
   };
 
@@ -599,7 +630,7 @@ const RootLayout: React.FC = () => {
           dataSource={userOrders}
           loading={userOrdersLoading}
           pagination={false}
-          scroll={{ x: 860 }}
+          scroll={{ x: 980 }}
           columns={
             [
               serialColumn<UserOrderItem>(),
@@ -644,6 +675,22 @@ const RootLayout: React.FC = () => {
                 title: '创建时间',
                 dataIndex: 'createdAt',
                 render: formatDateTime
+              },
+              {
+                title: '操作',
+                key: 'operation',
+                width: 110,
+                fixed: 'right',
+                render: (_, record) => record.payChannel === 'wechat_native' ? (
+                  <Button
+                    size="small"
+                    loading={refreshingUserOrderId === record._id}
+                    disabled={Boolean(refreshingUserOrderId && refreshingUserOrderId !== record._id)}
+                    onClick={() => refreshUserOrderStatus(record)}
+                  >
+                    刷新状态
+                  </Button>
+                ) : null
               }
             ] as ColumnsType<UserOrderItem>
           }
