@@ -6,6 +6,7 @@ import { formatDateTime } from '../../utils/auth';
 import { serialColumn } from '../../utils/tableColumns';
 
 const ORDER_LIST_DEFAULT_PAGE_SIZE = 20;
+const ALL_FILTER_VALUE = 'all';
 
 interface AdminOrderItem {
   _id: string;
@@ -298,26 +299,26 @@ const OrdersPage: React.FC = () => {
               onPressEnter={submitSearch}
               style={{ width: 220 }}
             />
-            <Select
+            <Select<AdminOrderItem['status'] | typeof ALL_FILTER_VALUE>
               placeholder="订单状态"
-              value={filters.status}
-              onChange={(value) => updateFilters({ status: value })}
+              value={filters.status ?? ALL_FILTER_VALUE}
+              onChange={(value) => updateFilters({ status: value === ALL_FILTER_VALUE ? undefined : value })}
               style={{ width: 140 }}
               options={[
-                { label: '全部状态', value: undefined },
+                { label: '全部状态', value: ALL_FILTER_VALUE },
                 { label: '已支付', value: 'paid' },
                 { label: '待支付', value: 'pending' },
                 { label: '已关闭', value: 'closed' },
                 { label: '已退款', value: 'refunded' }
               ]}
             />
-            <Select
+            <Select<AdminOrderItem['orderType'] | typeof ALL_FILTER_VALUE>
               placeholder="订单类型"
-              value={filters.orderType}
-              onChange={(value) => updateFilters({ orderType: value })}
+              value={filters.orderType ?? ALL_FILTER_VALUE}
+              onChange={(value) => updateFilters({ orderType: value === ALL_FILTER_VALUE ? undefined : value })}
               style={{ width: 140 }}
               options={[
-                { label: '全部类型', value: undefined },
+                { label: '全部类型', value: ALL_FILTER_VALUE },
                 { label: '会员订单', value: 'member' },
                 { label: '兑换订单', value: 'redeem' },
                 { label: '应用订单', value: 'app' },
@@ -325,13 +326,13 @@ const OrdersPage: React.FC = () => {
                 { label: '服务订单', value: 'service' }
               ]}
             />
-            <Select
+            <Select<AdminOrderItem['payChannel'] | typeof ALL_FILTER_VALUE>
               placeholder="支付方式"
-              value={filters.payChannel}
-              onChange={(value) => updateFilters({ payChannel: value })}
+              value={filters.payChannel ?? ALL_FILTER_VALUE}
+              onChange={(value) => updateFilters({ payChannel: value === ALL_FILTER_VALUE ? undefined : value })}
               style={{ width: 140 }}
               options={[
-                { label: '全部方式', value: undefined },
+                { label: '全部方式', value: ALL_FILTER_VALUE },
                 { label: '微信支付', value: 'wechat_native' },
                 { label: '兑换码', value: 'redeem_code' }
               ]}
