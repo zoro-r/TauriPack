@@ -20,3 +20,10 @@ Turborepo shortcuts:
 Shell build (base app templates):
 - `scripts/build-shell-macos.sh`
 - `scripts/build-shell-windows.ps1`
+
+Deployment:
+- `pnpm deploy` builds and uploads both dist directories through SSH, then restarts the application.
+- Configure SSH credentials and `BT_PANEL_URL`, `BT_API_KEY`, `BT_APP_NAME=cbapp` in the Git-ignored `.deploy.env`. BaoTa restart requires local Python 3.
+- `SSH_RESTART_COMMAND`, when configured, takes priority over the BaoTa API.
+- `pnpm deploy -- --no-restart` uploads without restarting; `--skip-build` reuses existing build outputs.
+- Missing restart configuration stops deployment before upload. A failed restart exits with an error after upload; fix the cause and rerun the restart with `set -a; source .deploy.env; set +a; python3 scripts/restart-baota.py`.

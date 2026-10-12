@@ -18,7 +18,6 @@ Builds and deploys basic-server and base-client dist files through SSH/SCP.
 Required environment variables:
   SSH_HOST             Server address
   SSH_USER             SSH username
-  SSH_RESTART_COMMAND  Optional command run on the server after deployment
 
 Authentication (choose one):
   SSH_KEY_PATH         Private key path (recommended)
@@ -27,10 +26,14 @@ Authentication (choose one):
 Optional environment variables:
   SSH_PORT             SSH port. Default: 22
   SSH_REMOTE_ROOT      Project root. Default: /www/wwwroot/project/cbapp
+  SSH_RESTART_COMMAND  Restart command; takes priority over BaoTa API
+  BT_PANEL_URL         BaoTa panel URL
+  BT_API_KEY           BaoTa API key
+  BT_APP_NAME          BaoTa Node project name, for example cbapp
 
 Options:
   --include-env        Upload apps/basic-server/.env after the dist files
-  --no-restart         Do not run SSH_RESTART_COMMAND after upload
+  --no-restart         Skip application restart after upload
   --skip-build         Upload existing dist directories without rebuilding
   -h, --help           Show this help text
 
@@ -57,6 +60,16 @@ for key in SSH_HOST SSH_USER; do
     exit 1
   fi
 done
+
+if [[ "$SKIP_RESTART" != true && -z "${SSH_RESTART_COMMAND:-}" ]]; then
+  for key in BT_PANEL_URL BT_API_KEY BT_APP_NAME; do
+    if [[ -z "${!key:-}" ]]; then
+      echo "Missing restart configuration: $key (or use --no-restart)" >&2
+      exit 1
+    fi
+  done
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is required for BaoTa restart" >&2; exit 1; }
+fi
 
 SSH_OPTIONS=(-p "$SSH_PORT" -o StrictHostKeyChecking=accept-new)
 SCP_OPTIONS=(-P "$SSH_PORT" -o StrictHostKeyChecking=accept-new)
@@ -109,10 +122,12 @@ if [[ "$INCLUDE_ENV" == true ]]; then
   scp_upload "$ROOT_DIR/apps/basic-server/.env" "$REMOTE_ROOT/apps/basic-server/.env"
 fi
 
-if [[ "$SKIP_RESTART" == true || -z "${SSH_RESTART_COMMAND:-}" ]]; then
-  echo "Application restart skipped; restart it from BaoTa."
-else
+if [[ "$SKIP_RESTART" == true ]]; then
+  echo "Application restart skipped (--no-restart)."
+elif [[ -n "${SSH_RESTART_COMMAND:-}" ]]; then
   echo "Restarting application"
   ssh_run "set -e; cd '$REMOTE_ROOT'; $SSH_RESTART_COMMAND"
+else
+  python3 "$ROOT_DIR/scripts/restart-baota.py"
 fi
 echo "Deployment complete"
