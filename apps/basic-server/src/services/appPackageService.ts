@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import multer from '@koa/multer';
+import crypto from 'crypto';
 import { resolveAppSlug } from '@/services/appCatalogService';
 
 const appUploadRoot = path.join(process.cwd(), 'uploads', 'apps');
@@ -17,6 +18,16 @@ ensureDir(appUploadRoot);
 ensureDir(tempUploadRoot);
 
 export const appPackageUpload = multer({ dest: tempUploadRoot });
+
+/** 公网地址只由服务端配置决定，不信任调用方的 Origin/Host。 */
+export const getAppHostingOrigin = () => {
+  const url = new URL(process.env.APP_HOSTING_ORIGIN || 'https://app.chaobenxueyuan.com');
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password ||
+      url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('APP_HOSTING_ORIGIN must be an HTTP(S) origin');
+  }
+  return url.origin;
+};
 
 const sanitizeZipEntries = (zipPath: string) => {
   const stdout = execFileSync('unzip', ['-Z1', zipPath], { encoding: 'utf8' });
@@ -104,13 +115,31 @@ export interface UploadAppPackageInput {
   file: UploadedPackageFile;
   appName: string;
   appId?: string;
+  createPreview?: boolean;
+  expireDays?: unknown;
 }
+
+const parsePreviewExpireDays = (value: unknown) => {
+  if (value === undefined) return 1;
+  if ((typeof value !== 'string' && typeof value !== 'number') ||
+      !/^\d+$/.test(String(value).trim())) {
+    throw new Error('expireDays 必须为 1 到 365 的整数天数');
+  }
+  const days = Number(value);
+  if (!Number.isSafeInteger(days) || days < 1 || days > 365) {
+    throw new Error('expireDays 必须为 1 到 365 的整数天数');
+  }
+  return days;
+};
 
 export const uploadAppPackage = async ({
   file,
   appName,
-  appId
+  appId,
+  createPreview = false,
+  expireDays
 }: UploadAppPackageInput) => {
+  const previewDays = parsePreviewExpireDays(expireDays);
   if (!file) {
     throw new Error('zip file is required');
   }
@@ -121,7 +150,9 @@ export const uploadAppPackage = async ({
     throw new Error('only .zip files are supported');
   }
 
-  const appSlug = await resolveAppSlug(appName, appId);
+  const resolvedSlug = await resolveAppSlug(appName, appId);
+  // 未上架的 API 上传也必须有独立目录，避免同名上传覆盖其他用户的包。
+  const appSlug = createPreview && !appId ? `${resolvedSlug}-${crypto.randomBytes(8).toString('hex')}` : resolvedSlug;
   const stagingDir = path.join(tempUploadRoot, `${appSlug}-${Date.now()}`);
   const extractDir = path.join(stagingDir, 'extract');
   const packagePath = path.join(stagingDir, 'package.zip');
@@ -144,6 +175,15 @@ export const uploadAppPackage = async ({
       throw new Error('index.html not found after package normalization');
     }
 
+    const previewToken = createPreview ? crypto.randomBytes(32).toString('hex') : undefined;
+    const previewExpiresAt = createPreview ? new Date(Date.now() + previewDays * 24 * 60 * 60 * 1000).toISOString() : undefined;
+    if (previewToken) {
+      fs.writeFileSync(path.join(stagingDir, '.preview.json'), JSON.stringify({
+        tokenHash: crypto.createHash('sha256').update(previewToken).digest('hex'),
+        expiresAt: previewExpiresAt
+      }));
+    }
+
     if (fs.existsSync(appDir)) {
       fs.rmSync(appDir, { recursive: true, force: true });
     }
@@ -157,7 +197,8 @@ export const uploadAppPackage = async ({
       appSlug,
       packageName: file.originalname,
       packageUrl,
-      entryUrl
+      entryUrl,
+      ...(previewToken ? { previewPath: `/app-previews/${encodeURIComponent(appSlug)}/${previewToken}/`, previewExpiresAt } : {})
     };
   } catch (error) {
     if (fs.existsSync(stagingDir)) {

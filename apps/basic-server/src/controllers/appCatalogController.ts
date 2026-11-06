@@ -25,7 +25,7 @@ import {
   normalizeCatalogMediaKind,
   uploadAppCatalogMedia
 } from '@/services/appCatalogMediaService';
-import { type UploadedPackageFile, uploadAppPackage } from '@/services/appPackageService';
+import { getAppHostingOrigin, type UploadedPackageFile, uploadAppPackage } from '@/services/appPackageService';
 import { getBearerToken, requireAdmin, requireUser } from '@/middleware/auth';
 import UserModel from '@/models/User';
 import { verifyAccessToken } from '@/services/authService';
@@ -191,24 +191,30 @@ export const postApp = async (ctx: Router.RouterContext) => {
 
 const uploadAppPackageForUser = async (
   ctx: Router.RouterContext,
-  user: { _id: { toString(): string }; role: 'admin' | 'user' }
+  user: { _id: { toString(): string }; role: 'admin' | 'user' },
+  createPreview = false
 ) => {
   const file = ctx.file as UploadedPackageFile | undefined;
-  const body = (ctx.request.body || {}) as { appName?: string; appId?: string };
+  const body = (ctx.request.body || {}) as { appName?: string; appId?: string; expireDays?: unknown };
   const appId = body.appId ? String(body.appId) : undefined;
   await authorizeMemberPackageUpload({
     userId: user._id.toString(),
     role: user.role,
     appId
   });
+  // 在写文件之前校验地址配置，避免落盘成功后才因拼接 URL 报错。
+  const hostingOrigin = getAppHostingOrigin();
   const result = await uploadAppPackage({
     file: file as UploadedPackageFile,
     appName: String(body.appName || ''),
-    appId
+    appId,
+    createPreview,
+    expireDays: body.expireDays
   });
+  const { previewPath, ...packageInfo } = result;
   return {
-    ...result,
-    previewUrl: new URL(result.entryUrl, ctx.origin).toString()
+    ...packageInfo,
+    previewUrl: new URL(previewPath || result.entryUrl, hostingOrigin).toString()
   };
 };
 
@@ -227,7 +233,7 @@ export const postAppPackageWithApiKey = async (ctx: Router.RouterContext) => {
     if (!user) {
       throw new Error('API Key 关联的用户不存在');
     }
-    ctx.body = success(await uploadAppPackageForUser(ctx, user), 'app package uploaded');
+    ctx.body = success(await uploadAppPackageForUser(ctx, user, true), 'app package uploaded');
   } catch (err) {
     ctx.body = errorResponse('upload app package failed', err);
   }

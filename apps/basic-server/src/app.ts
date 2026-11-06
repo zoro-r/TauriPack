@@ -16,6 +16,7 @@ import UserAppEntitlementModel from '@/models/UserAppEntitlement';
 import { ensureRedeemCodeUniqueIndex } from '@/models/RedeemCode';
 import { startNewApiRechargeRecovery } from '@/services/newApiRechargeRecoveryService';
 import { temporaryAppShareMiddleware } from '@/middleware/temporaryAppShare';
+import { appPackagePreviewMiddleware } from '@/middleware/appPackagePreview';
 import {
   hasValidTemporaryAppAccess,
   temporaryAppCookieName
@@ -80,6 +81,7 @@ app.use(
   })
 );
 app.use(logger());
+app.use(appPackagePreviewMiddleware);
 app.use(temporaryAppShareMiddleware);
 app.use(wechatNotifyBody);
 
