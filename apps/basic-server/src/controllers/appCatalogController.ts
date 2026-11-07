@@ -1,4 +1,7 @@
 import type Router from '@koa/router';
+import fs from 'fs';
+import { uploadMemberCloudPackage } from '@/services/memberCloudSpaceService';
+import { isApiKeyRequest, getCloudPackageList, removeCloudPackage } from '@/controllers/memberCloudSpaceController';
 import {
   assertAppDisplaySettingsPermission,
   assertMemberOwnsAppOrAdmin,
@@ -73,6 +76,7 @@ export const removeCategory = async (ctx: Router.RouterContext) => {
 };
 
 export const getAppList = async (ctx: Router.RouterContext) => {
+  if (isApiKeyRequest(ctx)) return getCloudPackageList(ctx);
   try {
     const query = ctx.query as unknown as AppListQuery & { page?: string; pageSize?: string };
     const token = getBearerToken(ctx);
@@ -197,13 +201,16 @@ const uploadAppPackageForUser = async (
   const file = ctx.file as UploadedPackageFile | undefined;
   const body = (ctx.request.body || {}) as { appName?: string; appId?: string; expireDays?: unknown };
   const appId = body.appId ? String(body.appId) : undefined;
-  await authorizeMemberPackageUpload({
-    userId: user._id.toString(),
-    role: user.role,
-    appId
-  });
+  if (createPreview && !appId) {
+    if (user.role !== 'admin' && !(await isMemberActive(user._id.toString()))) throw new Error('需要有效会员身份');
+  } else {
+    await authorizeMemberPackageUpload({ userId: user._id.toString(), role: user.role, appId });
+  }
   // 在写文件之前校验地址配置，避免落盘成功后才因拼接 URL 报错。
   const hostingOrigin = getAppHostingOrigin();
+  if (createPreview) return uploadMemberCloudPackage(user._id.toString(), {
+    file: file as UploadedPackageFile, appName: String(body.appName || ''), appId, expireDays: body.expireDays
+  });
   const result = await uploadAppPackage({
     file: file as UploadedPackageFile,
     appName: String(body.appName || ''),
@@ -223,6 +230,8 @@ export const postAppPackage = async (ctx: Router.RouterContext) => {
     ctx.body = success(await uploadAppPackageForUser(ctx, await requireUser(ctx)), 'app package uploaded');
   } catch (err) {
     ctx.body = errorResponse('upload app package failed', err);
+  } finally {
+    if (ctx.file?.path) fs.rmSync(ctx.file.path, { force: true });
   }
 };
 
@@ -236,6 +245,8 @@ export const postAppPackageWithApiKey = async (ctx: Router.RouterContext) => {
     ctx.body = success(await uploadAppPackageForUser(ctx, user, true), 'app package uploaded');
   } catch (err) {
     ctx.body = errorResponse('upload app package failed', err);
+  } finally {
+    if (ctx.file?.path) fs.rmSync(ctx.file.path, { force: true });
   }
 };
 
@@ -294,6 +305,7 @@ export const patchAppDisplaySettings = async (ctx: Router.RouterContext) => {
 };
 
 export const removeApp = async (ctx: Router.RouterContext) => {
+  if (isApiKeyRequest(ctx)) return removeCloudPackage(ctx);
   try {
     const user = await requireUser(ctx);
     const id = String(ctx.params.id || '');

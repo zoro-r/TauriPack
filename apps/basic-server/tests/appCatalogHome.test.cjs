@@ -114,6 +114,9 @@ function setup(initialRows = [], entitlements = []) {
   });
   const auth = { user: { _id: userId, role: 'user' }, token: 'test', invalid: false };
   const controller = loadSource('controllers/appCatalogController.ts', {
+    fs: require('node:fs'),
+    '@/services/memberCloudSpaceService': {},
+    '@/controllers/memberCloudSpaceController': { isApiKeyRequest: () => false },
     '@/services/appCatalogService': service,
     '@/services/appCoverService': {},
     '@/services/appCatalogMediaService': {},

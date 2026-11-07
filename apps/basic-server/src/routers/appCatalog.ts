@@ -1,4 +1,5 @@
 import type Router from '@koa/router';
+import { getCloudPackageList, getCloudQuota, removeCloudPackage } from '@/controllers/memberCloudSpaceController';
 import {
   getAppAccess,
   getAppById,
@@ -19,7 +20,7 @@ import {
 } from '@/controllers/appCatalogController';
 import { appCatalogMediaUpload } from '@/services/appCatalogMediaService';
 import { appCoverUpload } from '@/services/appCoverService';
-import { appPackageUpload } from '@/services/appPackageService';
+import { appCloudPackageUpload, appPackageUpload } from '@/services/appPackageService';
 import {
   deleteAppTemporaryLink,
   getAppTemporaryLinks,
@@ -42,6 +43,10 @@ export default function appCatalogRouter(router: Router) {
   router.delete('/api/apps/:id/temporary-links/:linkId', deleteAppTemporaryLink);
   router.post('/api/temporary-links/preview', getTemporaryLinkPreview);
   router.post('/api/temporary-links/claim', postTemporaryLinkClaim);
+  router.get('/api/apps/quota', getCloudQuota);
+  router.get('/api/previews/quota', getCloudQuota);
+  router.get('/api/previews', getCloudPackageList);
+  router.delete('/api/previews/:slug', removeCloudPackage);
   router.get('/api/apps/:id', getAppById);
   router.post('/api/apps/upload-cover', appCoverUpload.single('file'), postAppCover);
   router.post(
@@ -50,7 +55,7 @@ export default function appCatalogRouter(router: Router) {
     postAppCatalogMedia
   );
   router.post('/api/apps/upload-package', appPackageUpload.single('file'), postAppPackage);
-  router.post('/api/apps/upload-package/api-key', appPackageUpload.single('file'), postAppPackageWithApiKey);
+  router.post('/api/apps/upload-package/api-key', appCloudPackageUpload, postAppPackageWithApiKey);
   router.post('/api/apps', postApp);
   router.put('/api/apps/:id', putApp);
   router.patch('/api/apps/:id/display-settings', patchAppDisplaySettings);

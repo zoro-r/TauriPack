@@ -12,6 +12,15 @@ function load(file, deps, root, env = {}) {
   });
   const context = { exports: {}, URL, console, process: { cwd: () => root, env }, require: name => {
     if (Object.hasOwn(deps, name)) return deps[name];
+    if (name === '@/utils/tool') return { error: (message, err) => ({ code: -1, message, error: err.message }) };
+    if (name === '@/controllers/memberCloudSpaceController') return { isApiKeyRequest: () => false };
+    if (name === '@/services/memberCloudSpaceService') return {
+      uploadMemberCloudPackage: async (userId, input) => {
+        const service = deps['@/services/appPackageService'];
+        const result = await service.uploadAppPackage({ ...input, createPreview: true });
+        return { ...result, previewUrl: new URL(result.previewPath, service.getAppHostingOrigin()).toString() };
+      }
+    };
     if (!name.startsWith('@/')) return require(name);
     throw new Error(`Unexpected dependency: ${name}`);
   }};
@@ -94,7 +103,7 @@ test('both upload controllers ignore missing/local/untrusted origins; API key us
     },
     '@/middleware/auth': { requireUser: async () => ({ _id: 'user', role: 'user' }) },
     '@/models/User': { findById: async () => ({ _id: 'user', role: 'user' }) },
-    '@/services/authService': {}, '@/services/memberService': {}, '@/services/memberUploadCategoryService': {},
+    '@/services/authService': {}, '@/services/memberService': { isMemberActive: async () => !denied }, '@/services/memberUploadCategoryService': {},
     '@/services/documentService': { authenticateDocumentApiKey: async () => ({ userId: 'user' }) },
     '@/utils/tool': load('utils/tool.ts', {}, root)
   }, root);
@@ -133,7 +142,7 @@ test('multipart API accepts expireDays and returns the exact stored expiry; inva
     '@/services/appPackageService': service,
     '@/middleware/auth': {},
     '@/models/User': { findById: async () => ({ _id: 'user', role: 'user' }) },
-    '@/services/authService': {}, '@/services/memberService': {}, '@/services/memberUploadCategoryService': {},
+    '@/services/authService': {}, '@/services/memberService': { isMemberActive: async () => true }, '@/services/memberUploadCategoryService': {},
     '@/services/documentService': { authenticateDocumentApiKey: async () => ({ userId: 'user' }) },
     '@/utils/tool': load('utils/tool.ts', {}, root)
   }, root);

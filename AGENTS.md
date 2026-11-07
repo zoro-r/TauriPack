@@ -28,11 +28,14 @@
 - App catalog home regression tests: `cd apps/basic-server && node --test tests/appCatalogHome.test.cjs` (mocked database/filesystem; covers homepage visibility, stable pagination, featured apps, administrator permissions, legacy updates and image cleanup; no live database writes).
 - If you add tests, document how to run them in this file.
 - App package upload/preview regression tests: `cd apps/basic-server && node --test tests/appPackageUpload.test.cjs` (real ZIP extraction, multipart upload and local HTTP preview, mocked catalog/auth; covers custom expireDays/default expiry/invalid values, immediate anonymous access, token/expiry checks, isolated directories and file boundaries; no live database writes).
+- Member cloud space regression tests: `cd apps/basic-server && node --test tests/memberCloudSpace.test.cjs` (mocked MongoDB/auth plus real ZIP, multipart and local HTTP; covers account/key isolation, compatibility routes, concurrent 50MB reservations, quota, rollback, expiry cleanup, and preview revocation; no live database writes).
 - My orders filtering/pagination tests: `cd apps/basic-server && node --test tests/memberOrdersList.test.cjs` (mocked database/auth; covers user isolation, order type/status filters, stable paging, legacy response compatibility and invalid queries; no live order writes).
 - New-API recharge state-machine regression tests: `cd apps/basic-server && node --test tests/newApiRecharge.test.cjs` (mocked MongoDB/New-API boundaries; no live payments or balance updates).
 - Member account-switch permission/session tests: `cd apps/basic-server && node --test tests/memberDebug.test.cjs` (mocked database; no live account login).
 - Recharge order creation regression tests: `cd apps/basic-server && node --test tests/rechargeOrderCreation.test.cjs` (mocked database/WeChat; checks local-order-first ordering and failure/concurrent-callback handling).
 - WeChat callback/recovery regression tests: `cd apps/basic-server && node --test tests/wechatPaymentConcurrency.test.cjs tests/wechatNotifyTransport.test.cjs` (mocked database/WeChat plus local HTTP requests; covers duplicate callbacks, payment/close races, lost notifications and retry responses).
+
+- New-API managed-session tests: `cd apps/basic-server && node --test tests/newApiSession.test.cjs tests/newApiSessionStore.test.cjs` (mocked upstream/MongoDB; covers Bearer authentication, refresh rotation, restart reuse, encryption, process leases, concurrent 401 recovery, user/server isolation, legacy cookies and rate limits; no live account writes).
 
 ## API Response Rules (basic-server)
 - All controller responses must be returned via `apps/basic-server/src/utils/tool.ts` helpers (`success`, `fail`, `error`, `wechatSuccess`, `wechatFail`).

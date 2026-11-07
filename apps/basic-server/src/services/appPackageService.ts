@@ -3,6 +3,8 @@ import path from 'path';
 import { execFileSync } from 'child_process';
 import multer from '@koa/multer';
 import crypto from 'crypto';
+import type Koa from 'koa';
+import { error as errorResponse } from '@/utils/tool';
 import { resolveAppSlug } from '@/services/appCatalogService';
 
 const appUploadRoot = path.join(process.cwd(), 'uploads', 'apps');
@@ -18,6 +20,15 @@ ensureDir(appUploadRoot);
 ensureDir(tempUploadRoot);
 
 export const appPackageUpload = multer({ dest: tempUploadRoot });
+const cloudUpload = multer({ dest: tempUploadRoot, limits: { fileSize: 50 * 1024 * 1024, files: 1 } }).single('file');
+export const appCloudPackageUpload: Koa.Middleware = async (ctx, next) => {
+  try {
+    await cloudUpload(ctx, next);
+  } catch (err) {
+    ctx.body = errorResponse('upload app package failed',
+      (err as { code?: string }).code === 'LIMIT_FILE_SIZE' ? new Error('会员云空间上限为 50MB，当前 ZIP 包过大') : err);
+  }
+};
 
 /** 公网地址只由服务端配置决定，不信任调用方的 Origin/Host。 */
 export const getAppHostingOrigin = () => {
@@ -30,7 +41,7 @@ export const getAppHostingOrigin = () => {
 };
 
 const sanitizeZipEntries = (zipPath: string) => {
-  const stdout = execFileSync('unzip', ['-Z1', zipPath], { encoding: 'utf8' });
+  const stdout = execFileSync('unzip', ['-Z1', zipPath], { encoding: 'utf8', timeout: 30_000 });
   const entries = stdout
     .split('\n')
     .map((item) => item.trim())
@@ -117,6 +128,8 @@ export interface UploadAppPackageInput {
   appId?: string;
   createPreview?: boolean;
   expireDays?: unknown;
+  /** 仅云空间服务内部指定，不能从请求体透传。 */
+  storageSlug?: string;
 }
 
 const parsePreviewExpireDays = (value: unknown) => {
@@ -137,7 +150,8 @@ export const uploadAppPackage = async ({
   appName,
   appId,
   createPreview = false,
-  expireDays
+  expireDays,
+  storageSlug
 }: UploadAppPackageInput) => {
   const previewDays = parsePreviewExpireDays(expireDays);
   if (!file) {
@@ -152,7 +166,8 @@ export const uploadAppPackage = async ({
 
   const resolvedSlug = await resolveAppSlug(appName, appId);
   // 未上架的 API 上传也必须有独立目录，避免同名上传覆盖其他用户的包。
-  const appSlug = createPreview && !appId ? `${resolvedSlug}-${crypto.randomBytes(8).toString('hex')}` : resolvedSlug;
+  if (storageSlug && !/^preview-[a-f0-9]{32}$/.test(storageSlug)) throw new Error('invalid storage slug');
+  const appSlug = storageSlug || (createPreview && !appId ? `${resolvedSlug}-${crypto.randomBytes(8).toString('hex')}` : resolvedSlug);
   const stagingDir = path.join(tempUploadRoot, `${appSlug}-${Date.now()}`);
   const extractDir = path.join(stagingDir, 'extract');
   const packagePath = path.join(stagingDir, 'package.zip');
@@ -164,11 +179,19 @@ export const uploadAppPackage = async ({
 
   try {
     sanitizeZipEntries(packagePath);
+    if (createPreview) {
+      const summary = execFileSync('unzip', ['-Z', '-t', packagePath], {
+        encoding: 'utf8', timeout: 30_000, env: { ...process.env, LC_ALL: 'C' }
+      });
+      const bytes = summary.match(/(\d+) bytes uncompressed/);
+      if (!bytes || Number(bytes[1]) > 200 * 1024 * 1024) throw new Error('ZIP 解压后大小不得超过 200MB');
+    }
     ensureDir(extractDir);
-    execFileSync('unzip', ['-q', packagePath, '-d', extractDir]);
+    execFileSync('unzip', ['-q', packagePath, '-d', extractDir], { timeout: 30_000 });
 
     const entryParent = detectEntryParent(extractDir);
     copyDir(entryParent, webDir);
+    fs.rmSync(extractDir, { recursive: true, force: true });
 
     const entryFilePath = path.join(webDir, 'index.html');
     if (!fs.existsSync(entryFilePath)) {

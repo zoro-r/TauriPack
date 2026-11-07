@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { withStoredManagedSession, type ManagedSessionState } from '@/services/newApiSessionStore';
 import http from 'http';
 import https from 'https';
 import mongoose from 'mongoose';
@@ -99,10 +100,7 @@ interface NewApiRemoteUserSummary {
   status?: number;
 }
 
-interface ManagedSessionCacheEntry {
-  cookie: string;
-  expiresAt: number;
-}
+type ManagedSessionCacheEntry = ManagedSessionState;
 
 const logNewApi = (event: string, payload?: Record<string, unknown>) => {
   console.info(`[newApiService] ${event}`, payload || {});
@@ -117,8 +115,9 @@ const logNewApiError = (event: string, error: unknown, payload?: Record<string, 
 };
 
 const managedSessionCache = new Map<string, ManagedSessionCacheEntry>();
-const managedSessionInflight = new Map<string, Promise<string>>();
-const managedSessionRateLimitUntil = new Map<string, number>();
+const managedSessionInflight = new Map<string, Promise<ManagedSessionCacheEntry>>();
+// New-API login limits are shared by the backend server IP across all users.
+let managedSessionRateLimitUntil = 0;
 const DEFAULT_MANAGED_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
 const MIN_MANAGED_SESSION_CACHE_TTL_MS = 60 * 1000;
 const MAX_MANAGED_SESSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -419,65 +418,117 @@ const toCookieHeader = (setCookie: string[] | undefined) =>
     .filter(Boolean)
     .join('; ');
 
-const loginManagedUserSession = async (userId: string, remoteUserId: string) => {
-  const username = buildManagedUsername(userId);
-  const cached = managedSessionCache.get(userId);
-  if (cached && cached.expiresAt > Date.now()) {
-    logNewApi('loginManagedUserSession.cacheHit', { userId, remoteUserId, username });
-    return cached.cookie;
-  }
+const managedSessionScope = (userId: string, remoteUserId: string) =>
+  JSON.stringify([getConfig().baseUrl, userId, remoteUserId]);
 
-  const rateLimitUntil = managedSessionRateLimitUntil.get(userId) || 0;
-  if (rateLimitUntil > Date.now()) {
-    throw new Error('API 账户登录过于频繁，请稍后重试');
+const assertManagedSessionNotLimited = () => {
+  if (managedSessionRateLimitUntil > Date.now()) {
+    const seconds = Math.ceil((managedSessionRateLimitUntil - Date.now()) / 1000);
+    throw new Error(`API 账户登录暂时受限，请在 ${seconds} 秒后重试`);
   }
+};
 
-  const inflight = managedSessionInflight.get(userId);
-  if (inflight) {
-    logNewApi('loginManagedUserSession.join', { userId, remoteUserId, username });
-    return inflight;
+const checkManagedSessionRateLimit = (response: NewApiResponse<any>) => {
+  if (response.statusCode !== 429) return;
+  const retryAfter = String(response.headers['retry-after'] || '');
+  const seconds = Number(retryAfter);
+  const retryAt = retryAfter.trim() && Number.isFinite(seconds)
+    ? Date.now() + seconds * 1000
+    : Date.parse(retryAfter);
+  managedSessionRateLimitUntil = Math.max(
+    managedSessionRateLimitUntil,
+    Number.isFinite(retryAt) && retryAt > Date.now()
+      ? retryAt : Date.now() + MANAGED_SESSION_RATE_LIMIT_COOLDOWN_MS
+  );
+  assertManagedSessionNotLimited();
+};
+
+const managedSessionFromResponse = (
+  response: NewApiResponse<any>, remoteUserId: string, previous?: ManagedSessionState
+): ManagedSessionState => {
+  checkManagedSessionRateLimit(response);
+  const payload = assertNewApiSuccess(response, '获取 API 托管会话失败');
+  if (payload?.user?.id !== undefined && String(payload.user.id) !== remoteUserId) {
+    throw new Error('API 托管会话用户不匹配');
   }
+  const bearerToken = typeof payload?.access_token === 'string' ? payload.access_token.trim() : '';
+  const cookie = toCookieHeader(response.headers['set-cookie']);
+  const refreshCookie = cookie.split('; ').find((item) => item.startsWith('new_api_refresh=')) || previous?.refreshCookie;
+  const sessionId = typeof payload?.session?.sid === 'string' ? payload.session.sid : previous?.sessionId;
+  if (previous?.sessionId && sessionId !== previous.sessionId) throw new Error('API 刷新会话不匹配');
+  if (previous && !bearerToken) throw new Error('API 刷新未返回访问令牌');
+  if (!bearerToken && !cookie) throw new Error('new-api 登录成功但未返回访问令牌或会话 Cookie');
+  const tokenExpires = Number(payload?.access_expires_at);
+  const tokenExpiresAtMs = tokenExpires > 1e12 ? tokenExpires : tokenExpires * 1000;
+  const sessionExpires = Number(payload?.session?.expires_at);
+  return {
+    cookie: bearerToken ? '' : cookie,
+    bearerToken: bearerToken || undefined,
+    refreshCookie,
+    sessionId,
+    sessionExpiresAt: sessionExpires > 0
+      ? (sessionExpires > 1e12 ? sessionExpires : sessionExpires * 1000) : previous?.sessionExpiresAt,
+    expiresAt: bearerToken && Number.isFinite(tokenExpiresAtMs) && tokenExpiresAtMs > 0
+      ? Math.min(Date.now() + getManagedSessionCacheTtlMs(), tokenExpiresAtMs - 5000)
+      : Date.now() + getManagedSessionCacheTtlMs()
+  };
+};
 
-  const loginPromise = (async () => {
-    logNewApi('loginManagedUserSession.start', { userId, remoteUserId, username });
-    const response = await requestNewApi<any>({
-      method: 'POST',
-      path: '/api/user/login',
-      body: {
-        username,
-        password: buildManagedPassword(userId)
+const loginManagedUserSession = async (
+  userId: string, remoteUserId: string, rejectedSession?: ManagedSessionState
+) => {
+  const scope = managedSessionScope(userId, remoteUserId);
+  const usable = (session?: ManagedSessionState): boolean => Boolean(
+    session && session.expiresAt > Date.now() && (!rejectedSession ||
+      session.bearerToken !== rejectedSession.bearerToken || session.cookie !== rejectedSession.cookie)
+  );
+  const cached = managedSessionCache.get(scope);
+  if (cached && usable(cached)) return cached;
+  const inflight = managedSessionInflight.get(scope);
+  if (inflight) return inflight;
+
+  const promise = withStoredManagedSession(scope, getConfig().managedUserSecret, async (store) => {
+    if (store.session && usable(store.session)) {
+      managedSessionCache.set(scope, store.session);
+      return store.session;
+    }
+    const previous = store.session;
+    if (previous?.refreshCookie && (!previous.sessionExpiresAt || previous.sessionExpiresAt > Date.now())) {
+      assertManagedSessionNotLimited();
+      const response = await requestNewApi<any>({
+        method: 'POST', path: '/api/user/auth/refresh', cookie: previous.refreshCookie
+      });
+      checkManagedSessionRateLimit(response);
+      if (response.statusCode !== 401 && response.statusCode !== 403) {
+        // Network errors, conflicts and server errors must not create another login session.
+        const session = managedSessionFromResponse(response, remoteUserId, previous);
+        await store.save(session);
+        managedSessionCache.set(scope, session);
+        logNewApi('managedSession.refreshed', { userId, remoteUserId });
+        return session;
       }
-    });
-    if (response.statusCode === 429) {
-      managedSessionRateLimitUntil.set(userId, Date.now() + MANAGED_SESSION_RATE_LIMIT_COOLDOWN_MS);
-      throw new Error('API 账户登录过于频繁，请稍后重试');
+      await store.save(undefined);
     }
-    assertNewApiSuccess(response, '登录 new-api 托管用户失败');
-    const cookie = toCookieHeader(response.headers['set-cookie']);
-    if (!cookie) {
-      throw new Error('new-api 登录成功但未返回会话 Cookie');
+    assertManagedSessionNotLimited();
+    const response = await requestNewApi<any>({
+      method: 'POST', path: '/api/user/login',
+      body: { username: buildManagedUsername(userId), password: buildManagedPassword(userId) }
+    });
+    checkManagedSessionRateLimit(response);
+    if (response.data?.code === 'AUTH_SESSION_LIMIT') {
+      throw new Error('API 账户遗留登录会话已达上限，请联系管理员清理');
     }
-    logNewApi('loginManagedUserSession.success', {
-      userId,
-      remoteUserId,
-      username,
-      cookieLength: cookie.length
-    });
-    managedSessionRateLimitUntil.delete(userId);
-    managedSessionCache.set(userId, {
-      cookie,
-      expiresAt: Date.now() + getManagedSessionCacheTtlMs()
-    });
-    return cookie;
-  })();
-
-  managedSessionInflight.set(userId, loginPromise);
+    const session = managedSessionFromResponse(response, remoteUserId);
+    await store.save(session);
+    managedSessionCache.set(scope, session);
+    logNewApi('managedSession.created', { userId, remoteUserId });
+    return session;
+  });
+  managedSessionInflight.set(scope, promise);
   try {
-    return await loginPromise;
+    return await promise;
   } finally {
-    if (managedSessionInflight.get(userId) === loginPromise) {
-      managedSessionInflight.delete(userId);
-    }
+    if (managedSessionInflight.get(scope) === promise) managedSessionInflight.delete(scope);
   }
 };
 
@@ -486,33 +537,24 @@ const requestNewApiInUserContext = async <T>(
   remoteUserId: string,
   options: Omit<NewApiRequestOptions, 'bearerToken' | 'newApiUser' | 'cookie'>
 ) => {
-  const cookie = await loginManagedUserSession(userId, remoteUserId);
-  const response = await requestNewApi<T>({
-    ...options,
-    newApiUser: remoteUserId,
-    cookie
+  const session = await loginManagedUserSession(userId, remoteUserId);
+  const send = (value: ManagedSessionState) => requestNewApi<T>({
+    ...options, newApiUser: remoteUserId, cookie: value.cookie, bearerToken: value.bearerToken
   });
-  if (response.statusCode === 401) {
-    // The remote session may have expired before its local cache TTL.
-    managedSessionCache.delete(userId);
-    logNewApi('requestNewApiInUserContext.retryAfterUnauthorized', {
-      userId,
-      remoteUserId,
-      method: options.method,
-      path: options.path
+  const response = await send(session);
+  if (response.statusCode !== 401) return response;
+  const refreshedSession = await loginManagedUserSession(userId, remoteUserId, session);
+  const retryResponse = await send(refreshedSession);
+  if (retryResponse.statusCode === 401) {
+    const scope = managedSessionScope(userId, remoteUserId);
+    if (managedSessionCache.get(scope) === refreshedSession) managedSessionCache.delete(scope);
+    await withStoredManagedSession(scope, getConfig().managedUserSecret, async (store) => {
+      if (store.session?.bearerToken === refreshedSession.bearerToken && store.session?.cookie === refreshedSession.cookie) {
+        await store.save({ ...store.session!, expiresAt: 0 });
+      }
     });
-    const refreshedCookie = await loginManagedUserSession(userId, remoteUserId);
-    const retryResponse = await requestNewApi<T>({
-      ...options,
-      newApiUser: remoteUserId,
-      cookie: refreshedCookie
-    });
-    if (retryResponse.statusCode === 401) {
-      managedSessionCache.delete(userId);
-    }
-    return retryResponse;
   }
-  return response;
+  return retryResponse;
 };
 
 const getNewApiSelf = async (userId: string, remoteUserId: string) => {

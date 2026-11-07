@@ -1,4 +1,5 @@
 import Koa from 'koa';
+import { startMemberCloudCleanup } from '@/services/memberCloudSpaceService';
 import cors from '@koa/cors';
 import logger from 'koa-logger';
 import dotenv from 'dotenv';
@@ -54,6 +55,7 @@ mongoose
     await ensureRedeemCodeUniqueIndex();
     console.log('MongoDB connected');
     await startNewApiRechargeRecovery();
+    startMemberCloudCleanup();
   })
   .catch((error) => {
     console.error('MongoDB connection failed:', error);
