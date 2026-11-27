@@ -3,6 +3,7 @@ import mongoose, { Schema, type Document, type Model } from 'mongoose';
 export interface UserDocument extends Document {
   wechatOpenId: string;
   wechatUnionId?: string;
+  orangeUserId?: string;
   nickname?: string;
   avatar?: string;
   role: 'user' | 'admin';
@@ -14,6 +15,7 @@ const userSchema = new Schema<UserDocument>(
   {
     wechatOpenId: { type: String, required: true, unique: true, index: true },
     wechatUnionId: { type: String },
+    orangeUserId: { type: String, unique: true, sparse: true },
     nickname: { type: String },
     avatar: { type: String },
     role: {

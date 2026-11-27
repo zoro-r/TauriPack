@@ -7,6 +7,7 @@ export interface WechatLoginStateDocument extends Document {
   status: WechatLoginStatus;
   userId?: mongoose.Types.ObjectId;
   loginCode?: string;
+  orangeAttemptId?: string;
   expiresAt: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -23,6 +24,7 @@ const wechatLoginStateSchema = new Schema<WechatLoginStateDocument>(
     },
     userId: { type: Schema.Types.ObjectId, ref: 'User' },
     loginCode: { type: String, index: true },
+    orangeAttemptId: { type: String },
     expiresAt: { type: Date, required: true }
   },
   { timestamps: true }

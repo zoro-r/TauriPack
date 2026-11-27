@@ -39,4 +39,10 @@ Member application hosting:
 - `previewUrl` uses server configuration `APP_HOSTING_ORIGIN` (default `https://app.chaobenxueyuan.com`), never the caller's Origin or Host. Configure an HTTP(S) origin without a path. The stable preview URL is stored in the account's private MongoDB record; do not expose those records through public catalog APIs or logs.
 - Expired packages do not count toward quota and disappear from the active list. Files are removed on account list/quota/upload requests and by a startup/hourly sweep. Failed uploads roll back their reservation and files; interrupted uploads reserve capacity for at most 10 minutes and are cleaned up afterward. No TTL deletion of account records is used, ensuring filesystem cleanup runs first. Each account uses one MongoDB document for atomic reservations and metadata (no replica-set transaction requirement).
 - Existing packages without account metadata are intentionally not migrated, listed, counted, or deleted. Existing preview links keep their original expiry. The frontend must treat a successful empty server list as authoritative, rather than restoring stale browser-local records.
+
+### 橙子客户端账号绑定
+
+在超本云和橙子教育 API 的服务端配置同一份 `APP_CHAOBEN_LOGIN_SECRET`，使用独立的至少 32 字节随机密钥。配置只保存在各自的服务端环境。首次启用时核对 `users.orangeUserId` 稀疏唯一索引和 `orangeloginattempts.expiresAt` TTL 索引已经建立。
+
+更新橙子教育 API 与客户端后，从侧栏打开超本云。新用户和老用户首次都通过原微信二维码登录，扫码结果与当前橙子账号绑定。原会员、订单及应用权限沿用超本云用户 ID。重开客户端后使用同一个已通过短信验证码认证的橙子账号，可以直接进入已绑定的超本云账号。普通浏览器仍使用微信扫码。部署前可用 `node --test apps/basic-server/tests/orangeLogin.test.cjs` 验证绑定、免扫码重进、凭证重放和账号冲突。
 - `entryUrl` and `packageUrl` remain relative protected `/static/apps/...` paths for catalog use. Independent cloud packages have no catalog record, so those paths may return 404; use `previewUrl`. Relative web assets are supported. Uploading a cloud package does not publish a catalog app or make protected static paths public.

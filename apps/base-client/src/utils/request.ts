@@ -17,7 +17,7 @@ export const apiBase =
     : window.location.origin;
 
 const AUTH_ERROR_MESSAGES = ['未登录', '登录已过期，请重新登录', '会话已在其他设备登录，请重新登录'];
-const AUTH_REFRESH_BYPASS_URLS = ['/api/auth/me', '/api/auth/menus', '/api/member/me', '/api/member/orders'];
+const AUTH_REFRESH_BYPASS_URLS = ['/api/auth/me', '/api/auth/menus', '/api/auth/orange/session', '/api/member/me', '/api/member/orders'];
 
 let refreshPromise: Promise<boolean> | null = null;
 

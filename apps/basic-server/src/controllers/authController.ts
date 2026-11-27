@@ -2,6 +2,7 @@ import type Router from '@koa/router';
 import {
   createDevLoginTokens,
   createLoginState,
+  createOrangeSession,
   exchangeLoginCode,
   getLoginStatus,
   getCurrentUser,
@@ -15,6 +16,14 @@ import { error as errorResponse, fail, success } from '@/utils/tool';
 import { getBearerToken } from '@/middleware/auth';
 import { verifyAccessToken } from '@/services/authService';
 import { endMemberDebugSession } from '@/services/memberDebugService';
+import {
+  findOrangeLoginAttempt,
+  orangeBindingCookie,
+  orangeBindingLifetime,
+  orangeLoginOrigin,
+  OrangeLoginError,
+  startOrangeLogin
+} from '@/services/orangeLoginService';
 
 export const buildCookieOptions = (ctx: Router.RouterContext, maxAge?: number) => {
   const forwardedProto = String(ctx.get('x-forwarded-proto') || '').toLowerCase();
@@ -36,9 +45,57 @@ const clearSessionCookies = (ctx: Router.RouterContext) => {
   ctx.cookies.set('refreshToken', '', options);
 };
 
+const setSessionCookies = (ctx: Router.RouterContext, tokens: Awaited<ReturnType<typeof refreshTokens>>) => {
+  const options = buildCookieOptions(ctx, tokens.expiresIn * 1000);
+  ctx.cookies.set('accessToken', tokens.accessToken, options);
+  ctx.cookies.set('refreshToken', tokens.refreshToken, options);
+};
+
+const setOrangeBindingCookie = (ctx: Router.RouterContext, key: string) => {
+  ctx.cookies.set(orangeBindingCookie, key, {
+    ...buildCookieOptions(ctx, key ? orangeBindingLifetime : 0),
+    secure: true,
+    sameSite: 'strict'
+  });
+};
+
+export const openOrangeSession = async (ctx: Router.RouterContext) => {
+  ctx.set('Cache-Control', 'no-store');
+  if (ctx.get('origin') !== orangeLoginOrigin) {
+    ctx.body = fail('请求来源无效');
+    return;
+  }
+  const body = ctx.request.body as { ticket?: unknown } | undefined;
+  try {
+    const { key, linkedUserId } = await startOrangeLogin(body?.ticket);
+    if (!linkedUserId) {
+      clearSessionCookies(ctx);
+      setOrangeBindingCookie(ctx, key);
+      ctx.body = success({ status: 'scan-required' });
+      return;
+    }
+    // A valid existing session already belongs to the bound user.
+    const access = ctx.cookies.get('accessToken');
+    const current = access ? await verifyAccessToken(access).catch(() => null) : null;
+    if (!current || current.sub !== linkedUserId || current.debugSessionId) {
+      setSessionCookies(ctx, await createOrangeSession(linkedUserId, {
+        userAgent: ctx.get('user-agent'),
+        ip: ctx.ip
+      }));
+    }
+    setOrangeBindingCookie(ctx, '');
+    ctx.body = success({ status: 'signed-in' });
+  } catch (err) {
+    ctx.body = fail(err instanceof OrangeLoginError ? err.message : '橙子登录失败，请重试');
+  }
+};
+
 export const getWechatQr = async (ctx: Router.RouterContext) => {
   try {
-    const payload = await createLoginState();
+    const orangeAttempt = ctx.query.bindOrange === '1'
+      ? await findOrangeLoginAttempt(ctx.cookies.get(orangeBindingCookie))
+      : undefined;
+    const payload = await createLoginState(orangeAttempt);
     ctx.body = success(payload);
   } catch (err) {
     console.error('WeChat QR failed:', err);
@@ -79,33 +136,34 @@ export const getWechatStatus = async (ctx: Router.RouterContext) => {
 
 export const exchangeToken = async (ctx: Router.RouterContext) => {
   const body = ctx.request.body as
-    | { loginCode?: string; deviceId?: string; deviceType?: string }
+    | { loginCode?: string; deviceId?: string; deviceType?: string; bindOrange?: boolean }
     | undefined;
   if (!body?.loginCode) {
     ctx.body = fail('loginCode is required');
     return;
   }
   try {
+    const bindOrange = body.bindOrange === true;
+    if (bindOrange && ctx.get('origin') !== orangeLoginOrigin) {
+      ctx.body = fail('请求来源无效');
+      return;
+    }
+    const orangeAttempt = bindOrange ? await findOrangeLoginAttempt(ctx.cookies.get(orangeBindingCookie)) : undefined;
     const tokenData = await exchangeLoginCode(body.loginCode, {
       deviceId: body.deviceId,
-      deviceType: body.deviceType,
+      deviceType: orangeAttempt ? 'orange-desktop' : body.deviceType,
       userAgent: ctx.get('user-agent'),
       ip: ctx.ip
-    });
-    ctx.cookies.set(
-      'accessToken',
-      tokenData.accessToken,
-      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
-    );
-    ctx.cookies.set(
-      'refreshToken',
-      tokenData.refreshToken,
-      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
-    );
-    ctx.body = success(tokenData);
+    }, orangeAttempt);
+    setSessionCookies(ctx, tokenData);
+    if (orangeAttempt) setOrangeBindingCookie(ctx, '');
+    ctx.body = success(orangeAttempt ? { status: 'signed-in' } : tokenData);
   } catch (err) {
+    if (body.bindOrange === true) {
+      ctx.body = fail(err instanceof OrangeLoginError ? err.message : '绑定失败，请刷新二维码后重试');
+      return;
+    }
     console.error('[auth.exchangeToken] failed', {
-      loginCode: body.loginCode,
       ip: ctx.ip,
       ua: ctx.get('user-agent'),
       message: err instanceof Error ? err.message : String(err),
@@ -125,16 +183,7 @@ export const refreshToken = async (ctx: Router.RouterContext) => {
   }
   try {
     const tokenData = await refreshTokens(refreshTokenValue);
-    ctx.cookies.set(
-      'accessToken',
-      tokenData.accessToken,
-      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
-    );
-    ctx.cookies.set(
-      'refreshToken',
-      tokenData.refreshToken,
-      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
-    );
+    setSessionCookies(ctx, tokenData);
     ctx.body = success(tokenData);
   } catch (err) {
     clearSessionCookies(ctx);
@@ -145,6 +194,7 @@ export const refreshToken = async (ctx: Router.RouterContext) => {
 export const logoutToken = async (ctx: Router.RouterContext) => {
   const body = ctx.request.body as { refreshToken?: string } | undefined;
   const refreshTokenValue = body?.refreshToken || String(ctx.cookies.get('refreshToken') || '');
+  if (ctx.cookies.get(orangeBindingCookie)) setOrangeBindingCookie(ctx, '');
   try {
     const accessToken = getBearerToken(ctx);
     if (accessToken) {
@@ -173,16 +223,7 @@ export const devLoginToken = async (ctx: Router.RouterContext) => {
       userAgent: ctx.get('user-agent'),
       ip: ctx.ip
     });
-    ctx.cookies.set(
-      'accessToken',
-      tokenData.accessToken,
-      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
-    );
-    ctx.cookies.set(
-      'refreshToken',
-      tokenData.refreshToken,
-      buildCookieOptions(ctx, tokenData.expiresIn * 1000)
-    );
+    setSessionCookies(ctx, tokenData);
     ctx.body = success(tokenData);
   } catch (err) {
     clearSessionCookies(ctx);

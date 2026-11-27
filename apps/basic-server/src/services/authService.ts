@@ -7,6 +7,7 @@ import WechatLoginStateModel, { type WechatLoginStatus } from '@/models/WechatLo
 import RefreshTokenModel from '@/models/RefreshToken';
 import UserSessionModel from '@/models/UserSession';
 import { verifyMemberDebugSession } from '@/services/memberDebugService';
+import { linkOrangeUser } from '@/services/orangeLoginService';
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -181,13 +182,17 @@ const issueUserTokens = async (
   };
 };
 
-export const createLoginState = async () => {
+export const createOrangeSession = (userId: string, connection: { userAgent: string; ip: string }) =>
+  issueUserTokens(userId, { ...connection, deviceType: 'orange-desktop' });
+
+export const createLoginState = async (orangeAttempt?: { _id: string; expiresAt: Date }) => {
   const state = createRandomToken();
-  const expiresAt = new Date(Date.now() + LOGIN_STATE_TTL_MS);
+  const expiresAt = orangeAttempt?.expiresAt ?? new Date(Date.now() + LOGIN_STATE_TTL_MS);
   const record = await WechatLoginStateModel.create({
     state,
     status: 'PENDING',
-    expiresAt
+    expiresAt,
+    ...(orangeAttempt && { orangeAttemptId: orangeAttempt._id })
   });
   return {
     state: record.state,
@@ -211,6 +216,9 @@ export const handleWechatCallback = async (code: string, state: string) => {
     await loginState.save();
     throw new Error('State expired');
   }
+  if (loginState.status !== 'PENDING' && loginState.status !== 'SCANNED') {
+    throw new Error('State already used');
+  }
 
   const tokenResponse = await exchangeWechatCode(code);
   const openId = tokenResponse.openid;
@@ -228,10 +236,11 @@ export const handleWechatCallback = async (code: string, state: string) => {
     { upsert: true, new: true }
   );
 
-  loginState.status = 'SUCCESS';
-  loginState.userId = user._id;
-  loginState.loginCode = createRandomToken();
-  await loginState.save();
+  const updated = await WechatLoginStateModel.updateOne(
+    { state, status: { $in: ['PENDING', 'SCANNED'] }, expiresAt: { $gt: new Date() } },
+    { $set: { status: 'SUCCESS', userId: user._id, loginCode: createRandomToken() } }
+  );
+  if (!updated.matchedCount) throw new Error('State expired or already used');
 };
 
 export const getLoginStatus = async (state: string) => {
@@ -251,20 +260,22 @@ export const getLoginStatus = async (state: string) => {
 
 export const exchangeLoginCode = async (
   loginCode: string,
-  sessionContext?: { deviceId?: string; deviceType?: string; userAgent?: string; ip?: string }
+  sessionContext?: { deviceId?: string; deviceType?: string; userAgent?: string; ip?: string },
+  orangeAttempt?: { _id: string; orangeUserId: string }
 ) => {
-  const loginState = await WechatLoginStateModel.findOne({ loginCode, status: 'SUCCESS' });
+  const loginState = await WechatLoginStateModel.findOneAndUpdate(
+    {
+      loginCode, status: 'SUCCESS', expiresAt: { $gt: new Date() },
+      orangeAttemptId: orangeAttempt?._id ?? { $exists: false }
+    },
+    { $set: { status: 'EXPIRED' }, $unset: { loginCode: '' } }
+  );
   if (!loginState || !loginState.userId) {
     throw new Error('Invalid login code');
   }
   const userId = loginState.userId.toString();
-  const tokenData = await issueUserTokens(userId, sessionContext);
-
-  loginState.status = 'EXPIRED';
-  loginState.loginCode = undefined;
-  await loginState.save();
-
-  return tokenData;
+  if (orangeAttempt) await linkOrangeUser(userId, orangeAttempt.orangeUserId);
+  return issueUserTokens(userId, sessionContext);
 };
 
 export const createDevLoginTokens = async (sessionContext?: {

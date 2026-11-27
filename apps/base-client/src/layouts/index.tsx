@@ -3,6 +3,7 @@ import { Avatar, Button, Dropdown, Form, Input, MenuProps, Modal, Select, Space,
 import type { ColumnsType } from 'antd/es/table';
 import { Outlet, history, useLocation } from '@umijs/max';
 import request from '../utils/request';
+import { completeWechatLogin, getWechatLoginQr, hasOrangeLoginBridge, openOrangeLogin } from '../utils/orangeLogin';
 import { serialColumn } from '../utils/tableColumns';
 import {
   clearAuthStorage,
@@ -148,7 +149,7 @@ interface LoginStatusPayload {
 
 const RootLayout: React.FC = () => {
   const [messageApi, contextHolder] = message.useMessage();
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => getCurrentUserFromStorage());
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => hasOrangeLoginBridge() ? null : getCurrentUserFromStorage());
   const [menus, setMenus] = useState<NavMenuItem[]>(defaultMenus);
   const [memberInfo, setMemberInfo] = useState<MemberInfo | null>(null);
   const [memberPlans, setMemberPlans] = useState<MemberPlan[]>([]);
@@ -176,6 +177,7 @@ const RootLayout: React.FC = () => {
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginState, setLoginState] = useState<LoginStatePayload | null>(null);
+  const [bindOrange, setBindOrange] = useState(false);
   const [loginStatusText, setLoginStatusText] = useState('请使用微信扫码登录');
   const location = useLocation();
   const [redeemForm] = Form.useForm<{ code: string }>();
@@ -210,8 +212,11 @@ const RootLayout: React.FC = () => {
     if (isPlainLayout) {
       return;
     }
-    fetchCurrentUser()
-      .then(() => {
+    openOrangeLogin()
+      .then(async status => {
+        if (status === 'scan-required') throw new Error('请扫码绑定');
+        fetchMenus().catch(() => undefined);
+        await fetchCurrentUser();
         fetchMemberInfo().catch(() => {
           setMemberInfo(null);
         });
@@ -222,7 +227,6 @@ const RootLayout: React.FC = () => {
         setMemberInfo(null);
       });
     fetchMemberPlans().catch(() => undefined);
-    fetchMenus().catch(() => undefined);
   }, [isPlainLayout]);
 
   useEffect(() => {
@@ -255,17 +259,18 @@ const RootLayout: React.FC = () => {
           params: { state: loginState.state },
           alert: false
         });
+        if (stopped) return;
 
         if (statusData.status === 'SUCCESS' && statusData.loginCode) {
           stopped = true;
           window.clearInterval(timer);
-          setLoginStatusText('授权完成，正在登录...');
-          await request('/api/auth/token', {
-            method: 'POST',
-            data: { loginCode: statusData.loginCode },
-            alert: false
-          });
-          window.location.reload();
+          setLoginStatusText(bindOrange ? '授权完成，正在绑定…' : '授权完成，正在登录…');
+          try {
+            await completeWechatLogin(statusData.loginCode, bindOrange);
+            window.location.reload();
+          } catch (error) {
+            setLoginStatusText(error instanceof Error ? error.message : '登录失败，请刷新二维码后重试');
+          }
           return;
         }
 
@@ -281,7 +286,7 @@ const RootLayout: React.FC = () => {
           return;
         }
 
-        setLoginStatusText('请使用微信扫码登录');
+        setLoginStatusText(bindOrange ? '请使用微信扫码绑定' : '请使用微信扫码登录');
       } catch {
         setLoginStatusText('登录状态查询失败，请稍后重试');
       }
@@ -291,7 +296,7 @@ const RootLayout: React.FC = () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [loginModalOpen, loginState]);
+  }, [bindOrange, loginModalOpen, loginState]);
 
   useEffect(() => {
     if (!memberModalOpen || !memberOrder?.id || !currentUser) {
@@ -373,10 +378,19 @@ const RootLayout: React.FC = () => {
   const handleLoginEntry = async () => {
     setLoginLoading(true);
     try {
-      const data = await request<LoginStatePayload>('/api/auth/wechat/qr', { alert: false });
+      const status = await openOrangeLogin(true);
+      if (status === 'signed-in') {
+        window.location.reload();
+        return;
+      }
+      const bind = status === 'scan-required';
+      const data = await getWechatLoginQr<LoginStatePayload>(bind);
+      setBindOrange(bind);
       setLoginState(data);
-      setLoginStatusText('请使用微信扫码登录');
+      setLoginStatusText(bind ? '请使用微信扫码绑定' : '请使用微信扫码登录');
       setLoginModalOpen(true);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '登录失败，请重试');
     } finally {
       setLoginLoading(false);
     }
@@ -622,7 +636,7 @@ const RootLayout: React.FC = () => {
       </div>
 
       <Modal
-        title="微信扫码登录"
+        title={bindOrange ? '微信扫码登录并绑定' : '微信扫码登录'}
         open={loginModalOpen}
         onCancel={() => {
           setLoginModalOpen(false);
@@ -649,7 +663,7 @@ const RootLayout: React.FC = () => {
               </div>
               <div className="catalog-login__status">{loginStatusText}</div>
               <Typography.Text className="catalog-login__tip">
-                微信扫码后在手机端确认，页面会自动完成登录
+                {bindOrange ? '扫码确认后，此超本云账号将绑定当前橙子账号。下次从橙子打开可直接登录。' : '微信扫码后在手机端确认，页面会自动完成登录'}
               </Typography.Text>
             </>
           ) : (
