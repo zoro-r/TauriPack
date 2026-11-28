@@ -1,9 +1,10 @@
-import request from './request';
+import request, { isAuthErrorMessage } from './request';
 
-type OrangeLoginStatus = 'browser' | 'scan-required' | 'signed-in';
+type OrangeLoginStatus = 'browser' | 'scan-required' | 'wechat-required' | 'signed-in';
+type OrangeLoginProof = { ticket: string } | { mode: 'wechat' };
 type AuthBridge = {
   getContext(): Promise<{ chaobenLogin?: boolean }>;
-  chaobenTicket?(): Promise<{ ticket: string }>;
+  chaobenTicket?(): Promise<OrangeLoginProof>;
 };
 let opening: Promise<OrangeLoginStatus> | undefined;
 let lastResult: Promise<OrangeLoginStatus> | undefined;
@@ -14,10 +15,21 @@ export const hasOrangeLoginBridge = () => Boolean(getAuthBridge()?.chaobenTicket
 async function openFromClient(): Promise<OrangeLoginStatus> {
   const auth = getAuthBridge();
   if (!auth?.chaobenTicket || !(await auth.getContext()).chaobenLogin) return 'browser';
-  const { ticket } = await auth.chaobenTicket();
+  const proof = await auth.chaobenTicket();
+  if ('mode' in proof) {
+    // Electron keeps this site's cookies in the current Orange account's
+    // browser partition. Cloud authenticates those cookies on each open.
+    try {
+      await request('/api/auth/me', { alert: false });
+      return 'signed-in';
+    } catch (error) {
+      if (error instanceof Error && isAuthErrorMessage(error.message)) return 'wechat-required';
+      throw error;
+    }
+  }
   const result = await request<{ status: 'scan-required' | 'signed-in' }>('/api/auth/orange/session', {
     method: 'POST',
-    data: { ticket },
+    data: { ticket: proof.ticket },
     alert: false
   });
   return result.status;

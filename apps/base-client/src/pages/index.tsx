@@ -808,9 +808,9 @@ const HomePage: React.FC = () => {
     const initialLogin = openOrangeLogin();
     initialLogin.then(async status => {
       if (!active) return;
-      if (status === 'scan-required') {
+      if (status === 'scan-required' || status === 'wechat-required') {
         resetUser();
-        await showLoginQr(true);
+        await showLoginQr(status === 'scan-required');
         return;
       }
       if (status === 'browser') setCurrentUser(getCurrentUserFromStorage());

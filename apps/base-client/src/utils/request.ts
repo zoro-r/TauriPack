@@ -21,7 +21,7 @@ const AUTH_REFRESH_BYPASS_URLS = ['/api/auth/me', '/api/auth/menus', '/api/auth/
 
 let refreshPromise: Promise<boolean> | null = null;
 
-const isAuthErrorMessage = (value?: string) =>
+export const isAuthErrorMessage = (value?: string) =>
   Boolean(value && AUTH_ERROR_MESSAGES.some((item) => value.includes(item)));
 
 const shouldBypassAuthRecovery = (url: string) =>

@@ -23,7 +23,7 @@ const matches = (record, filter) => Object.entries(filter).every(([key, value]) 
   return record[key] === value;
 });
 
-function load(path, imports = {}) {
+function load(path, imports = {}, globals = {}) {
   const source = readFileSync(join(__dirname, '../src', path), 'utf8');
   const exports = {};
   runInNewContext(ts.transpile(source, {
@@ -34,7 +34,8 @@ function load(path, imports = {}) {
       WECHAT_CLIENT_BASE: origin
     } },
     console: { error() {} },
-    require: name => Object.hasOwn(imports, name) ? imports[name] : require(name)
+    require: name => Object.hasOwn(imports, name) ? imports[name] : require(name),
+    ...globals
   });
   return exports;
 }
@@ -164,4 +165,36 @@ test('a one-to-one binding cannot overwrite either existing account', async () =
   assert.match((await f.finish(differentOrange.cookies, await f.scan(differentOrange.cookies))).body.message, /已绑定其他橙子账号/);
   assert.equal(f.users[0].orangeUserId, firstOrange);
   assert.equal(f.users[1].orangeUserId, undefined);
+});
+
+test('the whitelist desktop flow uses its own WeChat login and reuses a valid Cloud session', async () => {
+  const calls = [];
+  let signedIn = false;
+  const client = load('../../base-client/src/utils/orangeLogin.ts', {
+    './request': {
+      __esModule: true,
+      isAuthErrorMessage: message => message === '未登录',
+      default: async (path, options) => {
+        calls.push({ path, options });
+        if (path === '/api/auth/me' && !signedIn) throw new Error('未登录');
+      }
+    }
+  }, {
+    Error,
+    window: { orangeApp: { auth: {
+      getContext: async () => ({ chaobenLogin: true }),
+      chaobenTicket: async () => ({ mode: 'wechat' })
+    } } }
+  });
+
+  assert.equal(await client.openOrangeLogin(), 'wechat-required');
+  await client.getWechatLoginQr(false);
+  await client.completeWechatLogin('wechat-login-code', false);
+  signedIn = true;
+  assert.equal(await client.openOrangeLogin(true), 'signed-in');
+  assert.deepEqual(calls.map(({ path }) => path), [
+    '/api/auth/me', '/api/auth/wechat/qr', '/api/auth/token', '/api/auth/me'
+  ]);
+  assert.equal(calls[1].options.params, undefined);
+  assert.equal(calls[2].options.data.bindOrange, undefined);
 });
